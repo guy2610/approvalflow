@@ -1,0 +1,53 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+local-secrets/
+
+# Logs
+*.log
+logs/
+
+# Go
+bin/
+coverage.out
+*.test
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Node / UI
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.next/
+vite.config.*.timestamp-*
+vite.config.*.mjs
+
+# Docker / local runtime
+docker-data/
+tmp/
+
+# Reports generated locally
+reports/*.tmp
+reports/*.local.*
+
+# IDE
+.idea/
+.vscode/
