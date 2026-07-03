@@ -1,0 +1,204 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: approvalflow
+      POSTGRES_PASSWORD: approvalflow
+      POSTGRES_DB: approvalflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U approvalflow -d approvalflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+
+  gateway-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: gateway-service
+    environment:
+      PORT: 8080
+    ports:
+      - "8080:8080"
+
+  gateway-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "gateway-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - gateway-service
+      - redis
+      - postgres
+    network_mode: "service:gateway-service"
+
+  submission-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: submission-service
+    environment:
+      PORT: 8080
+
+  submission-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "submission-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - submission-service
+      - redis
+      - postgres
+    network_mode: "service:submission-service"
+
+  decision-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: decision-service
+    environment:
+      PORT: 8080
+
+  decision-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "decision-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - decision-service
+      - redis
+      - postgres
+    network_mode: "service:decision-service"
+
+  approval-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: approval-service
+    environment:
+      PORT: 8080
+
+  approval-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "approval-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - approval-service
+      - redis
+      - postgres
+    network_mode: "service:approval-service"
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: payment-service
+    environment:
+      PORT: 8080
+
+  payment-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "payment-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - payment-service
+      - redis
+      - postgres
+    network_mode: "service:payment-service"
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.go-service
+      args:
+        SERVICE: audit-service
+    environment:
+      PORT: 8080
+
+  audit-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "audit-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - audit-service
+      - redis
+      - postgres
+    network_mode: "service:audit-service"
+
+  agent-service:
+    build:
+      context: .
+      dockerfile: services/agent-service/Dockerfile
+    environment:
+      PORT: 8080
+
+  agent-service-dapr:
+    image: daprio/daprd:1.14.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "agent-service",
+        "--app-port", "8080",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components"
+      ]
+    volumes:
+      - ./infra/dapr/components:/components
+    depends_on:
+      - agent-service
+      - redis
+      - postgres
+    network_mode: "service:agent-service"

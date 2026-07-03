@@ -1,0 +1,10 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+spec:
+  type: state.postgresql
+  version: v2
+  metadata:
+    - name: connectionString
+      value: "host=postgres user=approvalflow password=approvalflow dbname=approvalflow port=5432 sslmode=disable"
