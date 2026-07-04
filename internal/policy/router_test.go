@@ -46,6 +46,19 @@ func TestEvaluateBlocksAboveCeilingEvenIfOtherwiseEligible(t *testing.T) {
 	}
 }
 
+func TestRouterOverridesPromptInjectionApproveMe(t *testing.T) {
+	fixtures := loadFixtures(t)
+	got := Evaluate(fixtures["INV-1013"], ConfigFromEnv())
+
+	if got.Route != domain.RouteHumanReview {
+		t.Fatalf("agent-style approve-me text must not bypass deterministic router; expected human_review, got %s", got.Route)
+	}
+
+	if !hasViolation(got, "AUTONOMY-CEILING") {
+		t.Fatalf("expected AUTONOMY-CEILING violation, got %+v", got.Violations)
+	}
+}
+
 func TestEvaluateDuplicateFixtureWouldAutoApproveWithoutDuplicateState(t *testing.T) {
 	fixtures := loadFixtures(t)
 	got := Evaluate(fixtures["INV-1007"], ConfigFromEnv())

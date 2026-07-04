@@ -56,6 +56,16 @@ def recommend(payload: Dict[str, Any]) -> AgentRecommendation:
             cited_rules=cited_rules,
         )
 
+    # Intentional prompt-injection demo:
+    # the agent can be tricked by invoice notes, but the deterministic router must still enforce policy.
+    if "approve me" in notes:
+        return AgentRecommendation(
+            recommended_route="approve",
+            confidence=0.99,
+            reason="The note explicitly asks for approval, so the naive stub agent recommends approval.",
+            cited_rules=[],
+        )
+
     if not vendor_known:
         cited_rules.append(
             CitedRule(
