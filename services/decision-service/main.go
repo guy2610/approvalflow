@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"approvalflow/internal/domain"
@@ -15,6 +16,7 @@ import (
 
 const serviceName = "decision-service"
 const stateStore = "statestore"
+const agentServiceAppID = "agent-service"
 
 type server struct {
 	log  *logger.Logger
@@ -127,10 +129,22 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	agentRecommendation, agentErr := s.askAgent(r, event, record)
+	if agentErr != nil {
+		s.log.Error("agent recommendation unavailable; continuing with deterministic router", logger.Fields{
+			"error":          agentErr.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+	}
+
 	decision := policy.Evaluate(record.Request, s.cfg)
 	decision.TrackingID = event.TrackingID
 	decision.InvoiceID = event.InvoiceID
 	decision.CorrelationID = event.CorrelationID
+	if agentErr == nil {
+		decision.AgentRecommended = agentRecommendation.RecommendedRoute
+	}
 
 	applyDecision := domain.ApplyDecisionRequest{
 		Status:        statusFromDecision(decision.Route),
@@ -167,17 +181,62 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	}
 
 	s.log.Info("decision produced", logger.Fields{
-		"event_id":       event.EventID,
-		"tracking_id":    event.TrackingID,
-		"invoice_id":     event.InvoiceID,
-		"route":          decision.Route,
-		"amount_usd":     decision.AmountUSD,
-		"confidence":     decision.Confidence,
-		"violations":     violationIDs(decision.Violations),
-		"correlation_id": event.CorrelationID,
+		"event_id":          event.EventID,
+		"tracking_id":       event.TrackingID,
+		"invoice_id":        event.InvoiceID,
+		"agent_recommended": decision.AgentRecommended,
+		"route":             decision.Route,
+		"amount_usd":        decision.AmountUSD,
+		"confidence":        decision.Confidence,
+		"violations":        violationIDs(decision.Violations),
+		"correlation_id":    event.CorrelationID,
 	})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) askAgent(r *http.Request, event domain.SubmissionReceivedEvent, record domain.SubmissionRecord) (domain.AgentRecommendation, error) {
+	request := domain.AgentRecommendationRequest{
+		TrackingID:    event.TrackingID,
+		CorrelationID: event.CorrelationID,
+		Submission:    record.Request,
+	}
+
+	var recommendation domain.AgentRecommendation
+	status, err := s.dapr.InvokeJSON(
+		r.Context(),
+		agentServiceAppID,
+		"recommend",
+		request,
+		&recommendation,
+	)
+	if err != nil {
+		return domain.AgentRecommendation{}, err
+	}
+
+	if status < 200 || status >= 300 {
+		return domain.AgentRecommendation{}, fmt.Errorf("agent returned status %d", status)
+	}
+
+	s.log.Info("agent recommendation received", logger.Fields{
+		"tracking_id":       event.TrackingID,
+		"invoice_id":        event.InvoiceID,
+		"recommended_route": recommendation.RecommendedRoute,
+		"agent_confidence":  recommendation.Confidence,
+		"provider":          recommendation.Provider,
+		"cited_rules":       citedRuleIDs(recommendation.CitedRules),
+		"correlation_id":    event.CorrelationID,
+	})
+
+	return recommendation, nil
+}
+
+func citedRuleIDs(rules []domain.CitedRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, rule.RuleID)
+	}
+	return out
 }
 
 func statusFromDecision(route domain.DecisionRoute) domain.SubmissionStatus {
