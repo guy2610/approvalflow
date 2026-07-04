@@ -51,3 +51,7 @@ reports/*.local.*
 # IDE
 .idea/
 .vscode/
+
+# Personal notes / local documents
+*.docx
+~$*
