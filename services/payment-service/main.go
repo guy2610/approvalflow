@@ -110,6 +110,57 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 	paymentID := "pay_" + event.TrackingID
 	idempotencyKey := "payment:" + event.TrackingID
 
+	var existing domain.PaymentRecord
+	found, err := s.dapr.GetState(r.Context(), stateStore, idempotencyKey, &existing)
+	if err != nil {
+		s.log.Error("failed to check payment idempotency", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to check payment idempotency")
+		return
+	}
+
+	if found {
+		update := domain.ApplyPaymentRequest{
+			Status:    domain.SubmissionPaid,
+			Reason:    "Payment already completed; duplicate payment request ignored.",
+			PaymentID: existing.PaymentID,
+		}
+
+		status, err := s.dapr.InvokeJSON(
+			r.Context(),
+			"submission-service",
+			"internal/submissions/"+event.TrackingID+"/payment",
+			update,
+			nil,
+		)
+		if err != nil {
+			s.log.Error("failed to re-apply payment status for duplicate payment request", logger.Fields{
+				"error":          err.Error(),
+				"status":         status,
+				"payment_id":     existing.PaymentID,
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+			httpx.WriteError(w, r, http.StatusInternalServerError, "failed to re-apply payment status")
+			return
+		}
+
+		s.log.Info("duplicate payment request ignored", logger.Fields{
+			"payment_id":      existing.PaymentID,
+			"tracking_id":     event.TrackingID,
+			"invoice_id":      event.InvoiceID,
+			"amount_usd":      existing.AmountUSD,
+			"idempotency_key": idempotencyKey,
+			"correlation_id":  event.CorrelationID,
+		})
+
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	payment := domain.PaymentRecord{
 		PaymentID:      paymentID,
 		TrackingID:     event.TrackingID,
