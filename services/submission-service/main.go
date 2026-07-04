@@ -3,8 +3,8 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -40,6 +40,7 @@ func main() {
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/submissions", srv.handleSubmissions)
 	mux.HandleFunc("/submissions/", srv.handleSubmissionByID)
+	mux.HandleFunc("/internal/submissions/", srv.handleInternalSubmission)
 
 	handler := httpx.CorrelationMiddleware(mux)
 
@@ -182,6 +183,39 @@ func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.getSubmissionRecord(w, r, trackingID)
+}
+
+func (s *server) handleInternalSubmission(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/internal/submissions/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
+		return
+	}
+
+	if strings.HasSuffix(path, "/decision") {
+		trackingID := strings.TrimSuffix(path, "/decision")
+		trackingID = strings.TrimSuffix(trackingID, "/")
+
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		s.applyDecision(w, r, trackingID)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	trackingID := strings.Trim(path, "/")
+	s.getSubmissionRecord(w, r, trackingID)
+}
+
+func (s *server) getSubmissionRecord(w http.ResponseWriter, r *http.Request, trackingID string) {
 	var record domain.SubmissionRecord
 	found, err := s.dapr.GetState(r.Context(), stateStore, "submission:"+trackingID, &record)
 	if err != nil {
@@ -191,6 +225,37 @@ func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		httpx.WriteError(w, r, http.StatusNotFound, "submission not found")
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, record)
+}
+
+func (s *server) applyDecision(w http.ResponseWriter, r *http.Request, trackingID string) {
+	var req domain.ApplyDecisionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid decision payload")
+		return
+	}
+
+	var record domain.SubmissionRecord
+	found, err := s.dapr.GetState(r.Context(), stateStore, "submission:"+trackingID, &record)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to read submission")
+		return
+	}
+
+	if !found {
+		httpx.WriteError(w, r, http.StatusNotFound, "submission not found")
+		return
+	}
+
+	record.Status = req.Status
+	record.Reason = req.Reason
+	record.UpdatedAtUTC = time.Now().UTC()
+
+	if err := s.dapr.SaveState(r.Context(), stateStore, "submission:"+trackingID, record); err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission")
 		return
 	}
 

@@ -35,12 +35,20 @@ func NewFromEnv() *Client {
 }
 
 func (c *Client) InvokeJSON(ctx context.Context, appID string, method string, payload any, out any) (int, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return 0, fmt.Errorf("marshal invoke payload: %w", err)
+	httpMethod := http.MethodPost
+	var body []byte
+
+	if payload == nil {
+		httpMethod = http.MethodGet
+	} else {
+		var err error
+		body, err = json.Marshal(payload)
+		if err != nil {
+			return 0, fmt.Errorf("marshal invoke payload: %w", err)
+		}
 	}
 
-	status, raw, err := c.InvokeRaw(ctx, appID, method, http.MethodPost, body)
+	status, raw, err := c.InvokeRaw(ctx, appID, method, httpMethod, body)
 	if err != nil {
 		return status, err
 	}

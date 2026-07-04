@@ -29,21 +29,24 @@ type SubmissionRequest struct {
 type SubmissionStatus string
 
 const (
-	SubmissionAccepted   SubmissionStatus = "ACCEPTED"
-	SubmissionDuplicate  SubmissionStatus = "DUPLICATE"
-	SubmissionProcessing SubmissionStatus = "PROCESSING"
+	SubmissionAccepted               SubmissionStatus = "ACCEPTED"
+	SubmissionDuplicate              SubmissionStatus = "DUPLICATE"
+	SubmissionProcessing             SubmissionStatus = "PROCESSING"
+	SubmissionAutoApprovedPendingPay SubmissionStatus = "AUTO_APPROVED_PENDING_PAYMENT"
+	SubmissionHumanReviewRequired    SubmissionStatus = "HUMAN_REVIEW_REQUIRED"
+	SubmissionRejected               SubmissionStatus = "REJECTED"
 )
 
 type SubmissionRecord struct {
-	TrackingID        string           `json:"tracking_id"`
-	OriginalInvoiceID string           `json:"original_invoice_id,omitempty"`
-	Status            SubmissionStatus `json:"status"`
-	Reason            string           `json:"reason"`
-	Duplicate         bool             `json:"duplicate"`
-	DuplicateOf       string           `json:"duplicate_of,omitempty"`
+	TrackingID        string            `json:"tracking_id"`
+	OriginalInvoiceID string            `json:"original_invoice_id,omitempty"`
+	Status            SubmissionStatus  `json:"status"`
+	Reason            string            `json:"reason"`
+	Duplicate         bool              `json:"duplicate"`
+	DuplicateOf       string            `json:"duplicate_of,omitempty"`
 	Request           SubmissionRequest `json:"request"`
-	CreatedAtUTC      time.Time        `json:"created_at_utc"`
-	UpdatedAtUTC      time.Time        `json:"updated_at_utc"`
+	CreatedAtUTC      time.Time         `json:"created_at_utc"`
+	UpdatedAtUTC      time.Time         `json:"updated_at_utc"`
 }
 
 type SubmissionResponse struct {

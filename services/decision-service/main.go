@@ -6,15 +6,20 @@ import (
 
 	"approvalflow/internal/domain"
 	"approvalflow/internal/platform/config"
+	daprclient "approvalflow/internal/platform/dapr"
 	"approvalflow/internal/platform/health"
 	"approvalflow/internal/platform/httpx"
 	"approvalflow/internal/platform/logger"
+	"approvalflow/internal/policy"
 )
 
 const serviceName = "decision-service"
+const stateStore = "statestore"
 
 type server struct {
-	log *logger.Logger
+	log  *logger.Logger
+	dapr *daprclient.Client
+	cfg  policy.Config
 }
 
 type daprSubscription struct {
@@ -37,7 +42,11 @@ func main() {
 	log := logger.New(serviceName)
 	port := config.GetEnv("PORT", "8080")
 
-	srv := &server{log: log}
+	srv := &server{
+		log:  log,
+		dapr: daprclient.NewFromEnv(),
+		cfg:  policy.ConfigFromEnv(),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
@@ -99,13 +108,95 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.log.Info("submission received event consumed", logger.Fields{
-		"event_id":             event.EventID,
-		"tracking_id":          event.TrackingID,
-		"invoice_id":           event.InvoiceID,
-		"event_correlation_id":  event.CorrelationID,
-		"request_correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+	var record domain.SubmissionRecord
+	status, err := s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+event.TrackingID,
+		nil,
+		&record,
+	)
+	if err != nil {
+		s.log.Error("failed to load submission for decision", logger.Fields{
+			"error":          err.Error(),
+			"status":         status,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load submission")
+		return
+	}
+
+	decision := policy.Evaluate(record.Request, s.cfg)
+	decision.TrackingID = event.TrackingID
+	decision.InvoiceID = event.InvoiceID
+	decision.CorrelationID = event.CorrelationID
+
+	applyDecision := domain.ApplyDecisionRequest{
+		Status:        statusFromDecision(decision.Route),
+		Reason:        decision.Reason,
+		DecisionRoute: decision.Route,
+	}
+
+	if err := s.dapr.SaveState(r.Context(), stateStore, "decision:"+event.TrackingID, decision); err != nil {
+		s.log.Error("failed to save decision", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save decision")
+		return
+	}
+
+	status, err = s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+event.TrackingID+"/decision",
+		applyDecision,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("failed to update submission after decision", logger.Fields{
+			"error":          err.Error(),
+			"status":         status,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission")
+		return
+	}
+
+	s.log.Info("decision produced", logger.Fields{
+		"event_id":       event.EventID,
+		"tracking_id":    event.TrackingID,
+		"invoice_id":     event.InvoiceID,
+		"route":          decision.Route,
+		"amount_usd":     decision.AmountUSD,
+		"confidence":     decision.Confidence,
+		"violations":     violationIDs(decision.Violations),
+		"correlation_id": event.CorrelationID,
 	})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func statusFromDecision(route domain.DecisionRoute) domain.SubmissionStatus {
+	switch route {
+	case domain.RouteAutoApprove:
+		return domain.SubmissionAutoApprovedPendingPay
+	case domain.RouteHumanReview:
+		return domain.SubmissionHumanReviewRequired
+	case domain.RouteReject:
+		return domain.SubmissionRejected
+	default:
+		return domain.SubmissionProcessing
+	}
+}
+
+func violationIDs(violations []domain.PolicyViolation) []string {
+	out := make([]string, 0, len(violations))
+	for _, violation := range violations {
+		out = append(out, violation.RuleID)
+	}
+	return out
 }
