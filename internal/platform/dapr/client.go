@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"approvalflow/internal/platform/httpx"
 )
 
 type Client struct {
@@ -68,6 +70,9 @@ func (c *Client) InvokeRaw(ctx context.Context, appID string, method string, htt
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if correlationID := httpx.CorrelationIDFromContext(ctx); correlationID != "" {
+		req.Header.Set(httpx.CorrelationIDHeader, correlationID)
+	}
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
@@ -89,7 +94,41 @@ func (c *Client) InvokeRaw(ctx context.Context, appID string, method string, htt
 
 type stateItem struct {
 	Key   string `json:"key"`
-	Value any   `json:"value"`
+	Value any    `json:"value"`
+}
+
+func (c *Client) PublishEvent(ctx context.Context, pubsubName string, topic string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal event payload: %w", err)
+	}
+
+	eventURL := fmt.Sprintf(
+		"%s/v1.0/publish/%s/%s",
+		c.baseURL,
+		url.PathEscape(pubsubName),
+		url.PathEscape(topic),
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, eventURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create publish request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("publish event %s/%s: %w", pubsubName, topic, err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 400 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("publish failed with status %d: %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	return nil
 }
 
 func (c *Client) SaveState(ctx context.Context, store string, key string, value any) error {

@@ -135,6 +135,31 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	event := domain.SubmissionReceivedEvent{
+		EventID:       "evt_" + randomHex(12),
+		EventType:     domain.TopicSubmissionReceived,
+		CorrelationID: httpx.CorrelationIDFromContext(r.Context()),
+		TrackingID:    trackingID,
+		InvoiceID:     req.ID,
+		OccurredAtUTC: now,
+	}
+
+	if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicSubmissionReceived, event); err != nil {
+		s.log.Error("failed to publish submission received event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    trackingID,
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to publish submission event")
+		return
+	}
+
+	s.log.Info("submission accepted and event published", logger.Fields{
+		"tracking_id":    trackingID,
+		"event_id":       event.EventID,
+		"correlation_id": event.CorrelationID,
+	})
+
 	response := domain.SubmissionResponse{
 		TrackingID: trackingID,
 		Status:     record.Status,
