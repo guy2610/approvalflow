@@ -33,6 +33,9 @@ const (
 	SubmissionDuplicate              SubmissionStatus = "DUPLICATE"
 	SubmissionProcessing             SubmissionStatus = "PROCESSING"
 	SubmissionAutoApprovedPendingPay SubmissionStatus = "AUTO_APPROVED_PENDING_PAYMENT"
+	SubmissionPaymentPending         SubmissionStatus = "PAYMENT_PENDING"
+	SubmissionPaid                   SubmissionStatus = "PAID"
+	SubmissionPaymentFailed          SubmissionStatus = "PAYMENT_FAILED"
 	SubmissionHumanReviewRequired    SubmissionStatus = "HUMAN_REVIEW_REQUIRED"
 	SubmissionRejected               SubmissionStatus = "REJECTED"
 )

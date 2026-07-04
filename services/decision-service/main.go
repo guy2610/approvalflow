@@ -162,6 +162,36 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if decision.Route == domain.RouteAutoApprove {
+		paymentEvent := domain.PaymentRequestedEvent{
+			EventID:       "evt_" + event.EventID,
+			EventType:     domain.TopicPaymentRequested,
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			AmountUSD:     decision.AmountUSD,
+			OccurredAtUTC: decision.DecidedAtUTC,
+		}
+
+		if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicPaymentRequested, paymentEvent); err != nil {
+			s.log.Error("failed to publish payment requested event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+			httpx.WriteError(w, r, http.StatusInternalServerError, "failed to publish payment requested event")
+			return
+		}
+
+		s.log.Info("payment requested event published", logger.Fields{
+			"event_id":       paymentEvent.EventID,
+			"tracking_id":    event.TrackingID,
+			"invoice_id":     event.InvoiceID,
+			"amount_usd":     decision.AmountUSD,
+			"correlation_id": event.CorrelationID,
+		})
+	}
+
 	status, err = s.dapr.InvokeJSON(
 		r.Context(),
 		"submission-service",
