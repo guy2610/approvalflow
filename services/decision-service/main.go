@@ -192,6 +192,39 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		})
 	}
 
+	if decision.Route == domain.RouteHumanReview {
+		approvalEvent := domain.ApprovalRequiredEvent{
+			EventID:       "evt_" + event.EventID,
+			EventType:     domain.TopicApprovalRequired,
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			AmountUSD:     decision.AmountUSD,
+			Reason:        decision.Reason,
+			Violations:    violationIDs(decision.Violations),
+			OccurredAtUTC: decision.DecidedAtUTC,
+		}
+
+		if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicApprovalRequired, approvalEvent); err != nil {
+			s.log.Error("failed to publish approval required event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+			httpx.WriteError(w, r, http.StatusInternalServerError, "failed to publish approval required event")
+			return
+		}
+
+		s.log.Info("approval required event published", logger.Fields{
+			"event_id":       approvalEvent.EventID,
+			"tracking_id":    event.TrackingID,
+			"invoice_id":     event.InvoiceID,
+			"amount_usd":     decision.AmountUSD,
+			"violations":     approvalEvent.Violations,
+			"correlation_id": event.CorrelationID,
+		})
+	}
+
 	status, err = s.dapr.InvokeJSON(
 		r.Context(),
 		"submission-service",

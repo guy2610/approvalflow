@@ -219,6 +219,19 @@ func (s *server) handleInternalSubmission(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if strings.HasSuffix(path, "/approval") {
+		trackingID := strings.TrimSuffix(path, "/approval")
+		trackingID = strings.TrimSuffix(trackingID, "/")
+
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		s.applyApproval(w, r, trackingID)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -300,6 +313,37 @@ func (s *server) applyPayment(w http.ResponseWriter, r *http.Request, trackingID
 
 	if err := s.dapr.SaveState(r.Context(), stateStore, "submission:"+trackingID, record); err != nil {
 		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission payment status")
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, record)
+}
+
+func (s *server) applyApproval(w http.ResponseWriter, r *http.Request, trackingID string) {
+	var req domain.ApplyApprovalRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid approval payload")
+		return
+	}
+
+	var record domain.SubmissionRecord
+	found, err := s.dapr.GetState(r.Context(), stateStore, "submission:"+trackingID, &record)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to read submission")
+		return
+	}
+
+	if !found {
+		httpx.WriteError(w, r, http.StatusNotFound, "submission not found")
+		return
+	}
+
+	record.Status = req.Status
+	record.Reason = req.Reason
+	record.UpdatedAtUTC = time.Now().UTC()
+
+	if err := s.dapr.SaveState(r.Context(), stateStore, "submission:"+trackingID, record); err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission approval status")
 		return
 	}
 

@@ -11,3 +11,9 @@ type ApplyPaymentRequest struct {
 	Reason    string           `json:"reason"`
 	PaymentID string           `json:"payment_id"`
 }
+
+type ApplyApprovalRequest struct {
+	Status SubmissionStatus `json:"status"`
+	Reason string           `json:"reason"`
+	Actor  string           `json:"actor"`
+}

@@ -32,6 +32,8 @@ func main() {
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/submissions", srv.handleSubmissions)
 	mux.HandleFunc("/submissions/", srv.handleSubmissionByID)
+	mux.HandleFunc("/approvals", srv.handleApprovals)
+	mux.HandleFunc("/approvals/", srv.handleApprovalAction)
 
 	handler := httpx.CorrelationMiddleware(mux)
 
@@ -95,6 +97,57 @@ func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
 			return
 		}
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRaw(r.Context(), "approval-service", "approvals", http.MethodGet, nil)
+	if err != nil {
+		s.log.Error("approval service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "approval service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/approvals/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing approval action path")
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	status, raw, err := s.dapr.InvokeRaw(r.Context(), "approval-service", "approvals/"+path, http.MethodPost, body)
+	if err != nil {
+		s.log.Error("approval service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "approval service unavailable")
+		return
 	}
 
 	writeRawJSON(w, status, raw)

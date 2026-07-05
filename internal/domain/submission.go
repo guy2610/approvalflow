@@ -37,6 +37,9 @@ const (
 	SubmissionPaid                   SubmissionStatus = "PAID"
 	SubmissionPaymentFailed          SubmissionStatus = "PAYMENT_FAILED"
 	SubmissionHumanReviewRequired    SubmissionStatus = "HUMAN_REVIEW_REQUIRED"
+	SubmissionApprovedByHuman        SubmissionStatus = "APPROVED_BY_HUMAN"
+	SubmissionRejectedByHuman        SubmissionStatus = "REJECTED_BY_HUMAN"
+	SubmissionInfoRequested          SubmissionStatus = "INFO_REQUESTED"
 	SubmissionRejected               SubmissionStatus = "REJECTED"
 )
 
