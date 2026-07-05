@@ -318,7 +318,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 			"agent_recommended": decision.AgentRecommended,
 			"route":             decision.Route,
 			"amount_usd":        decision.AmountUSD,
-			"confidence":        decision.Confidence,
+			"router_confidence": decision.Confidence,
 			"violations":        violationIDs(decision.Violations),
 		},
 	}); err != nil {
