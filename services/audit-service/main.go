@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"approvalflow/internal/domain"
 	"approvalflow/internal/platform/config"
@@ -18,8 +19,9 @@ const serviceName = "audit-service"
 const stateStore = "statestore"
 
 type server struct {
-	log  *logger.Logger
-	dapr *daprclient.Client
+	log     *logger.Logger
+	dapr    *daprclient.Client
+	auditMu sync.Mutex
 }
 
 type daprSubscription struct {
@@ -101,6 +103,9 @@ func (s *server) handleAuditEvent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "missing audit event id or correlation id")
 		return
 	}
+
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 
 	eventKey := auditEventKey(event.EventID)
 	indexKey := auditIndexKey(event.CorrelationID)
