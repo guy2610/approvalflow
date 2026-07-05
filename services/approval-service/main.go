@@ -122,15 +122,18 @@ func (s *server) handleApprovalRequired(w http.ResponseWriter, r *http.Request) 
 
 	now := time.Now().UTC()
 	item := domain.ApprovalItem{
-		TrackingID:    event.TrackingID,
-		InvoiceID:     event.InvoiceID,
-		AmountUSD:     event.AmountUSD,
-		Status:        domain.ApprovalPending,
-		Reason:        event.Reason,
-		Violations:    event.Violations,
-		CorrelationID: event.CorrelationID,
-		CreatedAtUTC:  now,
-		UpdatedAtUTC:  now,
+		TrackingID:       event.TrackingID,
+		InvoiceID:        event.InvoiceID,
+		AmountUSD:        event.AmountUSD,
+		Status:           domain.ApprovalPending,
+		Reason:           event.Reason,
+		Violations:       event.Violations,
+		AgentRecommended: event.AgentRecommended,
+		AgentConfidence:  event.AgentConfidence,
+		AgentCitedRules:  event.AgentCitedRules,
+		CorrelationID:    event.CorrelationID,
+		CreatedAtUTC:     now,
+		UpdatedAtUTC:     now,
 	}
 
 	if err := s.dapr.SaveState(r.Context(), stateStore, key, item); err != nil {

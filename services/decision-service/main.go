@@ -194,15 +194,18 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 
 	if decision.Route == domain.RouteHumanReview {
 		approvalEvent := domain.ApprovalRequiredEvent{
-			EventID:       "evt_" + event.EventID,
-			EventType:     domain.TopicApprovalRequired,
-			CorrelationID: event.CorrelationID,
-			TrackingID:    event.TrackingID,
-			InvoiceID:     event.InvoiceID,
-			AmountUSD:     decision.AmountUSD,
-			Reason:        decision.Reason,
-			Violations:    violationIDs(decision.Violations),
-			OccurredAtUTC: decision.DecidedAtUTC,
+			EventID:          "evt_" + event.EventID,
+			EventType:        domain.TopicApprovalRequired,
+			CorrelationID:    event.CorrelationID,
+			TrackingID:       event.TrackingID,
+			InvoiceID:        event.InvoiceID,
+			AmountUSD:        decision.AmountUSD,
+			Reason:           decision.Reason,
+			Violations:       violationIDs(decision.Violations),
+			AgentRecommended: string(agentRecommendation.RecommendedRoute),
+			AgentConfidence:  agentRecommendation.Confidence,
+			AgentCitedRules:  citedRuleIDs(agentRecommendation.CitedRules),
+			OccurredAtUTC:    decision.DecidedAtUTC,
 		}
 
 		if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicApprovalRequired, approvalEvent); err != nil {
