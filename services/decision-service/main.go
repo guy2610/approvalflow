@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"approvalflow/internal/domain"
+	"approvalflow/internal/platform/auditlog"
 	"approvalflow/internal/platform/config"
 	daprclient "approvalflow/internal/platform/dapr"
 	"approvalflow/internal/platform/health"
@@ -190,6 +191,27 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 			"amount_usd":     decision.AmountUSD,
 			"correlation_id": event.CorrelationID,
 		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_payment_requested_by_decision",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "payment_requested_published",
+			Outcome:       "published",
+			Reason:        decision.Reason,
+			Fields: map[string]any{
+				"route":      decision.Route,
+				"amount_usd": decision.AmountUSD,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
 	}
 
 	if decision.Route == domain.RouteHumanReview {
@@ -226,6 +248,31 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 			"violations":     approvalEvent.Violations,
 			"correlation_id": event.CorrelationID,
 		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_approval_required_published",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "approval_required_published",
+			Outcome:       "published",
+			Reason:        decision.Reason,
+			Fields: map[string]any{
+				"route":             decision.Route,
+				"amount_usd":        decision.AmountUSD,
+				"violations":        approvalEvent.Violations,
+				"agent_recommended": approvalEvent.AgentRecommended,
+				"agent_confidence":  approvalEvent.AgentConfidence,
+				"agent_cited_rules": approvalEvent.AgentCitedRules,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
 	}
 
 	status, err = s.dapr.InvokeJSON(
@@ -257,6 +304,30 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		"violations":        violationIDs(decision.Violations),
 		"correlation_id":    event.CorrelationID,
 	})
+
+	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+		EventID:       "audit_" + event.TrackingID + "_decision_produced",
+		CorrelationID: event.CorrelationID,
+		TrackingID:    event.TrackingID,
+		InvoiceID:     event.InvoiceID,
+		Service:       serviceName,
+		Action:        "decision_produced",
+		Outcome:       string(decision.Route),
+		Reason:        decision.Reason,
+		Fields: map[string]any{
+			"agent_recommended": decision.AgentRecommended,
+			"route":             decision.Route,
+			"amount_usd":        decision.AmountUSD,
+			"confidence":        decision.Confidence,
+			"violations":        violationIDs(decision.Violations),
+		},
+	}); err != nil {
+		s.log.Error("failed to publish audit event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

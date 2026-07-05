@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"approvalflow/internal/domain"
+	"approvalflow/internal/platform/auditlog"
 	"approvalflow/internal/platform/config"
 	daprclient "approvalflow/internal/platform/dapr"
 	"approvalflow/internal/platform/health"
@@ -142,6 +143,28 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 			"correlation_id":  event.CorrelationID,
 		})
 
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_duplicate_payment_ignored",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "duplicate_payment_ignored",
+			Outcome:       string(existing.Status),
+			Reason:        duplicatePaymentReason(existing.Status),
+			Fields: map[string]any{
+				"payment_id":      existing.PaymentID,
+				"idempotency_key": idempotencyKey,
+				"amount_usd":      existing.AmountUSD,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -178,6 +201,27 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 			"correlation_id": event.CorrelationID,
 			"reason":         payment.Reason,
 		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_payment_failed_compensated",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "payment_failed_compensated",
+			Outcome:       string(payment.Status),
+			Reason:        payment.Reason,
+			Fields: map[string]any{
+				"payment_id": payment.PaymentID,
+				"amount_usd": event.AmountUSD,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -189,6 +233,27 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 		"amount_usd":     event.AmountUSD,
 		"correlation_id": event.CorrelationID,
 	})
+
+	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+		EventID:       "audit_" + event.TrackingID + "_payment_succeeded",
+		CorrelationID: event.CorrelationID,
+		TrackingID:    event.TrackingID,
+		InvoiceID:     event.InvoiceID,
+		Service:       serviceName,
+		Action:        "payment_succeeded",
+		Outcome:       string(payment.Status),
+		Reason:        payment.Reason,
+		Fields: map[string]any{
+			"payment_id": payment.PaymentID,
+			"amount_usd": event.AmountUSD,
+		},
+	}); err != nil {
+		s.log.Error("failed to publish audit event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -7,6 +7,7 @@ const (
 	TopicSubmissionReceived = "submission.received"
 	TopicPaymentRequested   = "payment.requested"
 	TopicApprovalRequired   = "approval.required"
+	TopicAuditEvent         = "audit.event"
 )
 
 type SubmissionReceivedEvent struct {
