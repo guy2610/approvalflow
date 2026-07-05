@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"approvalflow/internal/domain"
+	"approvalflow/internal/platform/auditlog"
 	"approvalflow/internal/platform/config"
 	daprclient "approvalflow/internal/platform/dapr"
 	"approvalflow/internal/platform/health"
@@ -100,6 +101,29 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 			DuplicateOf: existing.TrackingID,
 		}
 
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + existing.TrackingID + "_duplicate_submission_detected",
+			CorrelationID: httpx.CorrelationIDFromContext(r.Context()),
+			TrackingID:    existing.TrackingID,
+			InvoiceID:     existing.OriginalInvoiceID,
+			Service:       serviceName,
+			Action:        "duplicate_submission_detected",
+			Outcome:       "duplicate",
+			Reason:        response.Reason,
+			Fields: map[string]any{
+				"duplicate_of":  existing.TrackingID,
+				"vendor":        req.Vendor,
+				"invoiceNumber": req.InvoiceNumber,
+				"total":         req.Total,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    existing.TrackingID,
+				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+			})
+		}
+
 		httpx.WriteJSON(w, http.StatusOK, response)
 		return
 	}
@@ -160,6 +184,30 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		"event_id":       event.EventID,
 		"correlation_id": event.CorrelationID,
 	})
+
+	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+		EventID:       "audit_" + trackingID + "_submission_accepted",
+		CorrelationID: event.CorrelationID,
+		TrackingID:    trackingID,
+		InvoiceID:     req.ID,
+		Service:       serviceName,
+		Action:        "submission_accepted",
+		Outcome:       string(record.Status),
+		Reason:        record.Reason,
+		Fields: map[string]any{
+			"vendor":        req.Vendor,
+			"invoiceNumber": req.InvoiceNumber,
+			"category":      req.Category,
+			"currency":      req.Currency,
+			"total":         req.Total,
+		},
+	}); err != nil {
+		s.log.Error("failed to publish audit event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    trackingID,
+			"correlation_id": event.CorrelationID,
+		})
+	}
 
 	response := domain.SubmissionResponse{
 		TrackingID: trackingID,

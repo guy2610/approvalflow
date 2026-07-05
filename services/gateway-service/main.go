@@ -34,6 +34,7 @@ func main() {
 	mux.HandleFunc("/submissions/", srv.handleSubmissionByID)
 	mux.HandleFunc("/approvals", srv.handleApprovals)
 	mux.HandleFunc("/approvals/", srv.handleApprovalAction)
+	mux.HandleFunc("/audit/", srv.handleAuditTrail)
 
 	handler := httpx.CorrelationMiddleware(mux)
 
@@ -147,6 +148,32 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
 		httpx.WriteError(w, r, http.StatusBadGateway, "approval service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleAuditTrail(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/audit/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing correlation id")
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRawPassthrough(r.Context(), "audit-service", "audit/"+path, http.MethodGet, nil)
+	if err != nil {
+		s.log.Error("audit service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "audit service unavailable")
 		return
 	}
 
