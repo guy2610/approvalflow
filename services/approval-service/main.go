@@ -358,6 +358,12 @@ func (s *server) loadPendingApprovalOrWriteError(w http.ResponseWriter, r *http.
 	}
 
 	if item.Status != domain.ApprovalPending {
+		s.log.Info("approval action rejected because item is no longer pending", logger.Fields{
+			"tracking_id":    trackingID,
+			"current_status": item.Status,
+			"invoice_id":     item.InvoiceID,
+			"correlation_id": item.CorrelationID,
+		})
 		httpx.WriteError(w, r, http.StatusConflict, "approval is no longer pending")
 		return domain.ApprovalItem{}, false
 	}
