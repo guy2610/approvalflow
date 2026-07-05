@@ -108,7 +108,7 @@ func (s *server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, raw, err := s.dapr.InvokeRaw(r.Context(), "approval-service", "approvals", http.MethodGet, nil)
+	status, raw, err := s.dapr.InvokeRawPassthrough(r.Context(), "approval-service", "approvals", http.MethodGet, nil)
 	if err != nil {
 		s.log.Error("approval service unavailable", logger.Fields{
 			"error":          err.Error(),
@@ -140,7 +140,7 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	status, raw, err := s.dapr.InvokeRaw(r.Context(), "approval-service", "approvals/"+path, http.MethodPost, body)
+	status, raw, err := s.dapr.InvokeRawPassthrough(r.Context(), "approval-service", "approvals/"+path, http.MethodPost, body)
 	if err != nil {
 		s.log.Error("approval service unavailable", logger.Fields{
 			"error":          err.Error(),

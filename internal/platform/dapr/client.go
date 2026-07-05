@@ -217,3 +217,46 @@ func (c *Client) GetState(ctx context.Context, store string, key string, out any
 
 	return true, nil
 }
+
+// InvokeRawPassthrough invokes another Dapr app and returns the downstream
+// HTTP status/body even for business errors such as 400, 404, or 409.
+// It should be used by API gateway proxy handlers that need to preserve
+// downstream responses for clients.
+func (c *Client) InvokeRawPassthrough(ctx context.Context, appID string, method string, httpMethod string, payload []byte) (int, []byte, error) {
+	if httpMethod == "" {
+		httpMethod = http.MethodPost
+	}
+
+	url := c.baseURL + "/v1.0/invoke/" + appID + "/method/" + method
+
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, httpMethod, url, body)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	if correlationID := httpx.CorrelationIDFromContext(ctx); correlationID != "" {
+		req.Header.Set(httpx.CorrelationIDHeader, correlationID)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+
+	return resp.StatusCode, raw, nil
+}
