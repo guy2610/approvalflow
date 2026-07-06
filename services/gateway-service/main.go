@@ -3,7 +3,9 @@ package main
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"approvalflow/internal/platform/config"
 	daprclient "approvalflow/internal/platform/dapr"
@@ -36,7 +38,10 @@ func main() {
 	mux.HandleFunc("/approvals/", srv.handleApprovalAction)
 	mux.HandleFunc("/audit/", srv.handleAuditTrail)
 
-	handler := httpx.CorrelationMiddleware(mux)
+	rateLimitPerMinute := parsePositiveInt(config.GetEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120"), 120)
+	rateLimiter := httpx.NewRateLimiter(rateLimitPerMinute, time.Minute)
+
+	handler := httpx.CorrelationMiddleware(rateLimiter.Middleware(mux))
 
 	addr := ":" + port
 	log.Info("service starting", logger.Fields{"addr": addr})
@@ -194,4 +199,12 @@ func writeRawJSON(w http.ResponseWriter, status int, raw []byte) {
 	}
 
 	_, _ = w.Write([]byte("{}"))
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

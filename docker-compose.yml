@@ -22,6 +22,7 @@ services:
         SERVICE: gateway-service
     environment:
       PORT: 8080
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-120}
     ports:
       - "8080:8080"
 
