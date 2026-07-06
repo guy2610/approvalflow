@@ -679,11 +679,17 @@ function output(value, label) {
   }
 }
 
-function headers(correlationId) {
-  return {
+function headers(correlationId, role) {
+  const h = {
     "Content-Type": "application/json",
     "X-Correlation-Id": correlationId || "ui-demo-correlation"
   };
+
+  if (role) {
+    h["X-Demo-Role"] = role;
+  }
+
+  return h;
 }
 
 async function parseResponse(response) {
@@ -770,7 +776,7 @@ async function listApprovals() {
   try {
     const response = await fetch("/approvals", {
       method: "GET",
-      headers: headers("ui-approvals")
+      headers: headers("ui-approvals", "approver")
     });
 
     const result = await parseResponse(response);
@@ -800,7 +806,7 @@ async function approvalAction(action) {
 
     const response = await fetch("/approvals/" + encodeURIComponent(trackingId) + "/" + action, {
       method: "POST",
-      headers: headers("ui-approval-" + trackingId + "-" + action),
+      headers: headers("ui-approval-" + trackingId + "-" + action, "approver"),
       body: JSON.stringify(payload)
     });
 
@@ -820,7 +826,7 @@ async function getAudit() {
 
     const response = await fetch("/audit/" + encodeURIComponent(correlationId), {
       method: "GET",
-      headers: headers("ui-audit-" + correlationId)
+      headers: headers("ui-audit-" + correlationId, "auditor")
     });
 
     output(await parseResponse(response), "Audit fetched");
