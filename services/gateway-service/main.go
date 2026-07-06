@@ -31,6 +31,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", srv.handleHome)
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/submissions", srv.handleSubmissions)
 	mux.HandleFunc("/submissions/", srv.handleSubmissionByID)
