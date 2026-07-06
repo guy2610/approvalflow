@@ -6,6 +6,7 @@ COPY services/agent-service/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY services/agent-service/main.py /app/main.py
+COPY data/policy.md /app/data/policy.md
 
 EXPOSE 8080
 
