@@ -89,6 +89,8 @@ services:
         SERVICE: decision-service
     environment:
       PORT: 8080
+      AUTONOMY_CEILING_USD: ${AUTONOMY_CEILING_USD:-250}
+      AUTONOMY_CONFIDENCE: ${AUTONOMY_CONFIDENCE:-0.80}
 
   decision-service-dapr:
     image: daprio/daprd:1.14.4
