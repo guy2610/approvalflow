@@ -107,6 +107,51 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	record, err := s.loadSubmissionRecord(r, event.TrackingID)
+	if err != nil {
+		s.log.Error("failed to load submission before payment", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load submission before payment")
+		return
+	}
+
+	if !isPaymentEligibleStatus(record.Status) {
+		reason := "Payment request rejected because submission is not in a payment-eligible state."
+		s.log.Error("payment request rejected due to invalid submission state", logger.Fields{
+			"tracking_id":       event.TrackingID,
+			"invoice_id":        event.InvoiceID,
+			"submission_status": record.Status,
+			"correlation_id":    event.CorrelationID,
+		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_payment_request_rejected_invalid_state",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "payment_request_rejected_invalid_state",
+			Outcome:       "rejected",
+			Reason:        reason,
+			Fields: map[string]any{
+				"submission_status": record.Status,
+				"amount_usd":        event.AmountUSD,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	idempotencyKey := "payment:" + event.TrackingID
 
 	var existing domain.PaymentRecord
@@ -256,6 +301,31 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) loadSubmissionRecord(r *http.Request, trackingID string) (domain.SubmissionRecord, error) {
+	var record domain.SubmissionRecord
+
+	_, err := s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+trackingID,
+		nil,
+		&record,
+	)
+
+	return record, err
+}
+
+func isPaymentEligibleStatus(status domain.SubmissionStatus) bool {
+	switch status {
+	case domain.SubmissionAutoApprovedPendingPay,
+		domain.SubmissionApprovedByHuman,
+		domain.SubmissionPaymentPending:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *server) simulatePayment(event domain.PaymentRequestedEvent, idempotencyKey string) domain.PaymentRecord {

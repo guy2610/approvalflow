@@ -197,6 +197,24 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	status, err = s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+event.TrackingID+"/decision",
+		applyDecision,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("failed to update submission after decision", logger.Fields{
+			"error":          err.Error(),
+			"status":         status,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission")
+		return
+	}
+
 	if decision.Route == domain.RouteAutoApprove {
 		paymentEvent := domain.PaymentRequestedEvent{
 			EventID:       "evt_" + event.EventID,
@@ -307,24 +325,6 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 				"correlation_id": event.CorrelationID,
 			})
 		}
-	}
-
-	status, err = s.dapr.InvokeJSON(
-		r.Context(),
-		"submission-service",
-		"internal/submissions/"+event.TrackingID+"/decision",
-		applyDecision,
-		nil,
-	)
-	if err != nil {
-		s.log.Error("failed to update submission after decision", logger.Fields{
-			"error":          err.Error(),
-			"status":         status,
-			"tracking_id":    event.TrackingID,
-			"correlation_id": event.CorrelationID,
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission")
-		return
 	}
 
 	s.log.Info("decision produced", logger.Fields{
