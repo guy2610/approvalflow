@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"approvalflow/internal/domain"
 	"approvalflow/internal/platform/auditlog"
@@ -24,6 +27,13 @@ type server struct {
 	log  *logger.Logger
 	dapr *daprclient.Client
 	cfg  policy.Config
+}
+
+type autonomyDailyExposure struct {
+	Date            string             `json:"date"`
+	SubmitterTotals map[string]float64 `json:"submitter_totals"`
+	VendorTotals    map[string]float64 `json:"vendor_totals"`
+	UpdatedAtUTC    time.Time          `json:"updated_at_utc"`
 }
 
 type daprSubscription struct {
@@ -157,6 +167,18 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	decision.CorrelationID = event.CorrelationID
 	if agentErr == nil {
 		decision.AgentRecommended = agentRecommendation.RecommendedRoute
+	}
+
+	var budgetAdjusted bool
+	decision, budgetAdjusted = s.applyCumulativeAutonomyBudget(r.Context(), record.Request, decision, event)
+	if budgetAdjusted {
+		s.log.Info("auto-approval converted to human review by cumulative autonomy budget", logger.Fields{
+			"tracking_id":    event.TrackingID,
+			"invoice_id":     event.InvoiceID,
+			"amount_usd":     decision.AmountUSD,
+			"violations":     violationIDs(decision.Violations),
+			"correlation_id": event.CorrelationID,
+		})
 	}
 
 	applyDecision := domain.ApplyDecisionRequest{
@@ -342,6 +364,102 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.SubmissionRequest, decision domain.DecisionResult, event domain.SubmissionReceivedEvent) (domain.DecisionResult, bool) {
+	if !s.cfg.CumulativeAutonomyEnabled || decision.Route != domain.RouteAutoApprove {
+		return decision, false
+	}
+
+	dateKey := autonomyDateKey(req.Date, decision.DecidedAtUTC)
+	stateKey := "autonomy:daily:" + dateKey
+
+	exposure := autonomyDailyExposure{
+		Date:            dateKey,
+		SubmitterTotals: map[string]float64{},
+		VendorTotals:    map[string]float64{},
+	}
+
+	found, err := s.dapr.GetState(ctx, stateStore, stateKey, &exposure)
+	if err != nil {
+		s.log.Error("failed to load cumulative autonomy exposure; failing closed to human review", logger.Fields{
+			"error":          err.Error(),
+			"state_key":      stateKey,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+
+		decision.Route = domain.RouteHumanReview
+		decision.Violations = append(decision.Violations, domain.PolicyViolation{
+			RuleID:  "AUTONOMY-BUDGET-UNAVAILABLE",
+			Message: "Cumulative autonomy exposure state was unavailable, so the item requires human review.",
+		})
+		decision.Reason = "Human review required because cumulative autonomy exposure could not be verified."
+		return decision, true
+	}
+
+	if !found {
+		exposure.Date = dateKey
+	}
+	if exposure.SubmitterTotals == nil {
+		exposure.SubmitterTotals = map[string]float64{}
+	}
+	if exposure.VendorTotals == nil {
+		exposure.VendorTotals = map[string]float64{}
+	}
+
+	submitterKey := normalizeExposureKey(req.Submitter)
+	vendorKey := normalizeExposureKey(req.Vendor)
+
+	budgetContext := policy.AutonomyBudgetContext{
+		SubmitterApprovedTodayUSD: exposure.SubmitterTotals[submitterKey],
+		VendorApprovedTodayUSD:    exposure.VendorTotals[vendorKey],
+	}
+
+	adjusted := policy.ApplyCumulativeAutonomyBudget(decision, s.cfg, budgetContext)
+	if adjusted.Route != domain.RouteAutoApprove {
+		return adjusted, true
+	}
+
+	exposure.SubmitterTotals[submitterKey] += adjusted.AmountUSD
+	exposure.VendorTotals[vendorKey] += adjusted.AmountUSD
+	exposure.UpdatedAtUTC = time.Now().UTC()
+
+	if err := s.dapr.SaveState(ctx, stateStore, stateKey, exposure); err != nil {
+		s.log.Error("failed to save cumulative autonomy exposure after auto-approval", logger.Fields{
+			"error":          err.Error(),
+			"state_key":      stateKey,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+
+		adjusted.Route = domain.RouteHumanReview
+		adjusted.Violations = append(adjusted.Violations, domain.PolicyViolation{
+			RuleID:  "AUTONOMY-BUDGET-UNAVAILABLE",
+			Message: "Cumulative autonomy exposure could not be persisted, so the item requires human review.",
+		})
+		adjusted.Reason = "Human review required because cumulative autonomy exposure could not be persisted."
+		return adjusted, true
+	}
+
+	return adjusted, false
+}
+
+func autonomyDateKey(invoiceDate string, fallback time.Time) string {
+	invoiceDate = strings.TrimSpace(invoiceDate)
+	if len(invoiceDate) >= 10 {
+		return invoiceDate[:10]
+	}
+	return fallback.UTC().Format("2006-01-02")
+}
+
+func normalizeExposureKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func (s *server) askAgent(r *http.Request, event domain.SubmissionReceivedEvent, record domain.SubmissionRecord) (domain.AgentRecommendation, error) {

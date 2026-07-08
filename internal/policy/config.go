@@ -24,6 +24,10 @@ type Config struct {
 	SaaSMonthlyEligibleLimitUSD   float64
 	HardwareCapitalReviewAboveUSD float64
 
+	CumulativeAutonomyEnabled           bool
+	MaxDailyAutoApprovedPerSubmitterUSD float64
+	MaxDailyAutoApprovedPerVendorUSD    float64
+
 	NewVendorRequiresReview       *bool
 	MissingReceiptRequiresReview  *bool
 	MathMismatchRequiresReview    *bool
@@ -54,26 +58,36 @@ type fileConfig struct {
 		HardwareCapitalReviewAboveUSD float64 `json:"hardware_capital_expense_review_above_usd"`
 	} `json:"thresholds"`
 
+	CumulativeLimits struct {
+		Enabled                        bool    `json:"enabled"`
+		Window                         string  `json:"window"`
+		MaxAutoApprovedPerSubmitterUSD float64 `json:"max_auto_approved_per_submitter_usd"`
+		MaxAutoApprovedPerVendorUSD    float64 `json:"max_auto_approved_per_vendor_usd"`
+	} `json:"cumulative_limits"`
+
 	FXRates map[string]float64 `json:"fx_rates"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		AutonomyCeilingUSD:            250,
-		MinConfidence:                 0.80,
-		FXRates:                       map[string]float64{"USD": 1.0, "EUR": 1.08, "GBP": 1.27},
-		ReceiptRequiredAboveUSD:       25,
-		ForeignCurrencyHardStopUSD:    1000,
-		UnknownCategoryMaxConfidence:  0.50,
-		MealMaxPerAttendeeUSD:         75,
-		MealClientReviewAboveUSD:      500,
-		TravelManagerReviewAboveUSD:   1500,
-		SaaSMonthlyEligibleLimitUSD:   200,
-		HardwareCapitalReviewAboveUSD: 1000,
-		NewVendorRequiresReview:       boolPtr(true),
-		MissingReceiptRequiresReview:  boolPtr(true),
-		MathMismatchRequiresReview:    boolPtr(true),
-		ForeignCurrencyRequiresReview: boolPtr(true),
+		AutonomyCeilingUSD:                  250,
+		MinConfidence:                       0.80,
+		FXRates:                             map[string]float64{"USD": 1.0, "EUR": 1.08, "GBP": 1.27},
+		ReceiptRequiredAboveUSD:             25,
+		ForeignCurrencyHardStopUSD:          1000,
+		UnknownCategoryMaxConfidence:        0.50,
+		MealMaxPerAttendeeUSD:               75,
+		MealClientReviewAboveUSD:            500,
+		TravelManagerReviewAboveUSD:         1500,
+		SaaSMonthlyEligibleLimitUSD:         200,
+		HardwareCapitalReviewAboveUSD:       1000,
+		CumulativeAutonomyEnabled:           true,
+		MaxDailyAutoApprovedPerSubmitterUSD: 1000,
+		MaxDailyAutoApprovedPerVendorUSD:    1000,
+		NewVendorRequiresReview:             boolPtr(true),
+		MissingReceiptRequiresReview:        boolPtr(true),
+		MathMismatchRequiresReview:          boolPtr(true),
+		ForeignCurrencyRequiresReview:       boolPtr(true),
 	}
 }
 
@@ -153,6 +167,16 @@ func LoadConfig(path string) (Config, error) {
 		cfg.HardwareCapitalReviewAboveUSD = raw.Thresholds.HardwareCapitalReviewAboveUSD
 	}
 
+	if raw.CumulativeLimits.Enabled {
+		cfg.CumulativeAutonomyEnabled = true
+	}
+	if raw.CumulativeLimits.MaxAutoApprovedPerSubmitterUSD != 0 {
+		cfg.MaxDailyAutoApprovedPerSubmitterUSD = raw.CumulativeLimits.MaxAutoApprovedPerSubmitterUSD
+	}
+	if raw.CumulativeLimits.MaxAutoApprovedPerVendorUSD != 0 {
+		cfg.MaxDailyAutoApprovedPerVendorUSD = raw.CumulativeLimits.MaxAutoApprovedPerVendorUSD
+	}
+
 	if raw.FXRates != nil {
 		cfg.FXRates = normalizeRates(raw.FXRates)
 	}
@@ -214,6 +238,12 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.HardwareCapitalReviewAboveUSD == 0 {
 		cfg.HardwareCapitalReviewAboveUSD = def.HardwareCapitalReviewAboveUSD
 	}
+	if cfg.MaxDailyAutoApprovedPerSubmitterUSD == 0 {
+		cfg.MaxDailyAutoApprovedPerSubmitterUSD = def.MaxDailyAutoApprovedPerSubmitterUSD
+	}
+	if cfg.MaxDailyAutoApprovedPerVendorUSD == 0 {
+		cfg.MaxDailyAutoApprovedPerVendorUSD = def.MaxDailyAutoApprovedPerVendorUSD
+	}
 
 	return cfg
 }
@@ -236,6 +266,14 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.FXRates["USD"] != 1.0 {
 		return fmt.Errorf("USD FX rate must be 1.0")
+	}
+	if cfg.CumulativeAutonomyEnabled {
+		if cfg.MaxDailyAutoApprovedPerSubmitterUSD <= 0 {
+			return fmt.Errorf("daily submitter auto-approval limit must be positive when cumulative limits are enabled")
+		}
+		if cfg.MaxDailyAutoApprovedPerVendorUSD <= 0 {
+			return fmt.Errorf("daily vendor auto-approval limit must be positive when cumulative limits are enabled")
+		}
 	}
 
 	return nil
