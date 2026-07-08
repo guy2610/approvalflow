@@ -64,7 +64,8 @@ The autonomy ceiling prevents the system from auto-approving submissions above t
 In the demo, the default ceiling is:
 
 ````text
-AUTONOMY_CEILING_USD=250
+POLICY_CONFIG_PATH=data/policy-config.json
+max_auto_approve_usd=250
 ````
 
 The expected behavior for an over-ceiling item is:

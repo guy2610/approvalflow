@@ -3,8 +3,6 @@ package policy
 import (
 	"fmt"
 	"math"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,27 +11,11 @@ import (
 
 const RouterVersion = "deterministic-policy-router-v1"
 
-type Config struct {
-	AutonomyCeilingUSD float64
-	MinConfidence      float64
-	FXRates            map[string]float64
-}
-
-func ConfigFromEnv() Config {
-	return Config{
-		AutonomyCeilingUSD: getFloatEnv("AUTONOMY_CEILING_USD", 250),
-		MinConfidence:      getFloatEnv("AUTONOMY_CONFIDENCE", 0.80),
-		FXRates: map[string]float64{
-			"USD": 1.0,
-			"EUR": 1.08,
-			"GBP": 1.27,
-		},
-	}
-}
-
 func Evaluate(req domain.SubmissionRequest, cfg Config) domain.DecisionResult {
+	cfg = normalizeConfig(cfg)
+
 	amountUSD := convertToUSD(req.Total, req.Currency, cfg)
-	confidence := estimateConfidence(req)
+	confidence := estimateConfidence(req, cfg)
 
 	violations := make([]domain.PolicyViolation, 0)
 
@@ -42,33 +24,35 @@ func Evaluate(req domain.SubmissionRequest, cfg Config) domain.DecisionResult {
 		return result(domain.RouteReject, confidence, amountUSD, violations, "Rejected because the receipt is alcohol-only.")
 	}
 
-	if !mathReconciles(req) {
+	if boolValue(cfg.MathMismatchRequiresReview, true) && !mathReconciles(req) {
 		violations = append(violations, violation("GLOBAL-MATH", "Line items plus tax do not reconcile to total."))
 	}
 
-	if req.Total > 25 && !req.ReceiptPresent {
-		violations = append(violations, violation("GLOBAL-RECEIPT", "Receipt is required for expenses over $25."))
+	if boolValue(cfg.MissingReceiptRequiresReview, true) && amountUSD > cfg.ReceiptRequiredAboveUSD && !req.ReceiptPresent {
+		violations = append(violations, violation("GLOBAL-RECEIPT", fmt.Sprintf("Receipt is required for expenses over %.2f USD.", cfg.ReceiptRequiredAboveUSD)))
 	}
 
-	if !req.VendorKnown {
+	if boolValue(cfg.NewVendorRequiresReview, true) && !req.VendorKnown {
 		violations = append(violations, violation("GLOBAL-VENDOR", "New or unknown vendor requires human review."))
 	}
 
-	if strings.ToUpper(req.Currency) != "USD" && (amountUSD > cfg.AutonomyCeilingUSD || amountUSD > 1000) {
+	if boolValue(cfg.ForeignCurrencyRequiresReview, true) &&
+		strings.ToUpper(req.Currency) != "USD" &&
+		(amountUSD > cfg.AutonomyCeilingUSD || amountUSD > cfg.ForeignCurrencyHardStopUSD) {
 		violations = append(violations, violation("GLOBAL-FX", "Foreign-currency item crosses a hard-stop threshold."))
 	}
 
 	switch strings.ToLower(strings.TrimSpace(req.Category)) {
 	case "meals":
-		violations = append(violations, evaluateMeals(req)...)
+		violations = append(violations, evaluateMeals(req, cfg)...)
 	case "travel":
-		violations = append(violations, evaluateTravel(req)...)
+		violations = append(violations, evaluateTravel(req, cfg)...)
 	case "saas":
-		violations = append(violations, evaluateSaaS(req)...)
+		violations = append(violations, evaluateSaaS(req, cfg)...)
 	case "hardware":
-		violations = append(violations, evaluateHardware(req)...)
+		violations = append(violations, evaluateHardware(req, cfg)...)
 	default:
-		confidence = math.Min(confidence, 0.50)
+		confidence = math.Min(confidence, cfg.UnknownCategoryMaxConfidence)
 	}
 
 	if amountUSD > cfg.AutonomyCeilingUSD {
@@ -86,7 +70,7 @@ func Evaluate(req domain.SubmissionRequest, cfg Config) domain.DecisionResult {
 	return result(domain.RouteAutoApprove, confidence, amountUSD, nil, "Auto-approved by deterministic policy router: under autonomy ceiling, policy-compliant, known vendor, receipt present when required, and math reconciles.")
 }
 
-func evaluateMeals(req domain.SubmissionRequest) []domain.PolicyViolation {
+func evaluateMeals(req domain.SubmissionRequest, cfg Config) []domain.PolicyViolation {
 	var violations []domain.PolicyViolation
 
 	if req.Attendees == nil {
@@ -100,22 +84,22 @@ func evaluateMeals(req domain.SubmissionRequest) []domain.PolicyViolation {
 	}
 
 	perAttendee := req.Total / float64(*req.Attendees)
-	if perAttendee > 75 && req.Total <= 500 {
-		violations = append(violations, violation("MEAL-01", fmt.Sprintf("Meal amount %.2f per attendee exceeds $75.", perAttendee)))
+	if perAttendee > cfg.MealMaxPerAttendeeUSD && req.Total <= cfg.MealClientReviewAboveUSD {
+		violations = append(violations, violation("MEAL-01", fmt.Sprintf("Meal amount %.2f per attendee exceeds %.2f USD.", perAttendee, cfg.MealMaxPerAttendeeUSD)))
 	}
 
-	if req.Total > 500 && !hasClientEntertainmentInfo(req) {
-		violations = append(violations, violation("MEAL-02", "Client entertainment over $500 requires business justification and client name."))
+	if req.Total > cfg.MealClientReviewAboveUSD && !hasClientEntertainmentInfo(req) {
+		violations = append(violations, violation("MEAL-02", fmt.Sprintf("Client entertainment over %.2f USD requires business justification and client name.", cfg.MealClientReviewAboveUSD)))
 	}
 
 	return violations
 }
 
-func evaluateTravel(req domain.SubmissionRequest) []domain.PolicyViolation {
+func evaluateTravel(req domain.SubmissionRequest, cfg Config) []domain.PolicyViolation {
 	var violations []domain.PolicyViolation
 
-	if req.Total > 1500 {
-		violations = append(violations, violation("TRAVEL-02", "Single travel expense over $1,500 requires manager approval."))
+	if req.Total > cfg.TravelManagerReviewAboveUSD {
+		violations = append(violations, violation("TRAVEL-02", fmt.Sprintf("Single travel expense over %.2f USD requires manager approval.", cfg.TravelManagerReviewAboveUSD)))
 	}
 
 	text := strings.ToLower(req.Notes + " " + lineDescriptions(req))
@@ -126,19 +110,19 @@ func evaluateTravel(req domain.SubmissionRequest) []domain.PolicyViolation {
 	return violations
 }
 
-func evaluateSaaS(req domain.SubmissionRequest) []domain.PolicyViolation {
-	if req.Total > 200 {
+func evaluateSaaS(req domain.SubmissionRequest, cfg Config) []domain.PolicyViolation {
+	if req.Total > cfg.SaaSMonthlyEligibleLimitUSD {
 		return []domain.PolicyViolation{
-			violation("SAAS-01", "SaaS subscriptions are policy-eligible up to $200/month."),
+			violation("SAAS-01", fmt.Sprintf("SaaS subscriptions are policy-eligible up to %.2f USD/month.", cfg.SaaSMonthlyEligibleLimitUSD)),
 		}
 	}
 	return nil
 }
 
-func evaluateHardware(req domain.SubmissionRequest) []domain.PolicyViolation {
-	if req.Total > 1000 {
+func evaluateHardware(req domain.SubmissionRequest, cfg Config) []domain.PolicyViolation {
+	if req.Total > cfg.HardwareCapitalReviewAboveUSD {
 		return []domain.PolicyViolation{
-			violation("HW-02", "Hardware over $1,000 is a capital expense and requires human approval."),
+			violation("HW-02", fmt.Sprintf("Hardware over %.2f USD is a capital expense and requires human approval.", cfg.HardwareCapitalReviewAboveUSD)),
 		}
 	}
 	return nil
@@ -161,10 +145,10 @@ func convertToUSD(amount float64, currency string, cfg Config) float64 {
 	return amount * rate
 }
 
-func estimateConfidence(req domain.SubmissionRequest) float64 {
+func estimateConfidence(req domain.SubmissionRequest, cfg Config) float64 {
 	category := strings.ToLower(strings.TrimSpace(req.Category))
 	if category == "other" || category == "" {
-		return 0.50
+		return cfg.UnknownCategoryMaxConfidence
 	}
 	return 0.95
 }
@@ -223,18 +207,4 @@ func summarizeHumanReview(violations []domain.PolicyViolation) string {
 
 func round2(value float64) float64 {
 	return math.Round(value*100) / 100
-}
-
-func getFloatEnv(key string, fallback float64) float64 {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return fallback
-	}
-
-	return value
 }

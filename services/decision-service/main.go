@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"approvalflow/internal/domain"
 	"approvalflow/internal/platform/auditlog"
@@ -45,10 +46,21 @@ func main() {
 	log := logger.New(serviceName)
 	port := config.GetEnv("PORT", "8080")
 
+	policyCfg, err := policy.LoadConfigFromEnv()
+	if err != nil {
+		log.Error("failed to load policy config", logger.Fields{"error": err.Error()})
+		os.Exit(1)
+	}
+
+	log.Info("policy config loaded", logger.Fields{
+		"autonomy_ceiling_usd": policyCfg.AutonomyCeilingUSD,
+		"min_confidence":       policyCfg.MinConfidence,
+	})
+
 	srv := &server{
 		log:  log,
 		dapr: daprclient.NewFromEnv(),
-		cfg:  policy.ConfigFromEnv(),
+		cfg:  policyCfg,
 	}
 
 	mux := http.NewServeMux()

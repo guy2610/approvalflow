@@ -14,6 +14,7 @@ FROM alpine:3.20
 WORKDIR /app
 
 COPY --from=builder /out/service /app/service
+COPY data ./data
 
 EXPOSE 8080
 

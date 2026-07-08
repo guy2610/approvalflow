@@ -11,7 +11,7 @@ My approach is to let the system handle the simple low-risk cases, while forcing
 
 ## Decision
 
-For the local demo, I chose a conservative autonomy posture:
+For the local demo, I chose a conservative autonomy posture configured through `data/policy-config.json`:
 
 - maximum autonomous approval amount: USD 250
 - minimum confidence threshold: 0.80

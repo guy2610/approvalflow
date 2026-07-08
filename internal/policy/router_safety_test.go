@@ -142,21 +142,6 @@ func TestMathMismatchRequiresHumanReview(t *testing.T) {
 	}
 }
 
-func TestConfigFromEnvReadsAutonomyThresholds(t *testing.T) {
-	t.Setenv("AUTONOMY_CEILING_USD", "10")
-	t.Setenv("AUTONOMY_CONFIDENCE", "0.99")
-
-	cfg := ConfigFromEnv()
-
-	if cfg.AutonomyCeilingUSD != 10 {
-		t.Fatalf("expected autonomy ceiling 10, got %.2f", cfg.AutonomyCeilingUSD)
-	}
-
-	if cfg.MinConfidence != 0.99 {
-		t.Fatalf("expected min confidence 0.99, got %.2f", cfg.MinConfidence)
-	}
-}
-
 func baseRequest() domain.SubmissionRequest {
 	return domain.SubmissionRequest{
 		ID:             "TEST-INVOICE",
