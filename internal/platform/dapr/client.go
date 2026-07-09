@@ -175,6 +175,51 @@ func (c *Client) SaveState(ctx context.Context, store string, key string, value 
 	return nil
 }
 
+func (c *Client) GetSecret(ctx context.Context, store string, key string) (string, bool, error) {
+	secretURL := fmt.Sprintf(
+		"%s/v1.0/secrets/%s/%s",
+		c.baseURL,
+		url.PathEscape(store),
+		url.PathEscape(key),
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, secretURL, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("create get secret request: %w", err)
+	}
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("get secret %s/%s: %w", store, key, err)
+	}
+	defer res.Body.Close()
+
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", false, fmt.Errorf("read secret response: %w", err)
+	}
+
+	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+
+	if res.StatusCode >= 400 {
+		return "", false, fmt.Errorf("get secret failed with status %d: %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return "", false, fmt.Errorf("decode secret %s/%s: %w", store, key, err)
+	}
+
+	value, ok := values[key]
+	if !ok || value == "" {
+		return "", false, nil
+	}
+
+	return value, true, nil
+}
+
 func (c *Client) GetState(ctx context.Context, store string, key string, out any) (bool, error) {
 	stateURL := fmt.Sprintf(
 		"%s/v1.0/state/%s/%s",

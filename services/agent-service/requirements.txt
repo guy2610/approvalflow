@@ -1,3 +1,11 @@
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic==2.10.3
+python-dotenv==1.0.1
+
+# Optional Gemini provider.
+# Pinned to avoid slow pip backtracking during Docker builds.
+google-genai==1.0.0
+requests==2.32.3
+certifi>=2024.8.30
+httpx==0.28.1

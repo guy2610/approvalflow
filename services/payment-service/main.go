@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -18,8 +20,9 @@ const serviceName = "payment-service"
 const stateStore = "statestore"
 
 type server struct {
-	log  *logger.Logger
-	dapr *daprclient.Client
+	log                        *logger.Logger
+	dapr                       *daprclient.Client
+	paymentProviderTokenLoaded bool
 }
 
 type daprSubscription struct {
@@ -47,6 +50,11 @@ func main() {
 		dapr: daprclient.NewFromEnv(),
 	}
 
+	if err := srv.loadPaymentProviderSecret(context.Background()); err != nil {
+		log.Error("failed to load payment provider secret", logger.Fields{"error": err.Error()})
+		return
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/dapr/subscribe", srv.handleDaprSubscribe)
@@ -60,6 +68,35 @@ func main() {
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
+}
+
+func (s *server) loadPaymentProviderSecret(ctx context.Context) error {
+	storeName := config.GetEnv("DAPR_SECRET_STORE_NAME", "localsecrets")
+	secretName := config.GetEnv("PAYMENT_PROVIDER_TOKEN_SECRET_NAME", "payment-provider-token")
+
+	var lastErr error
+	for attempt := 1; attempt <= 30; attempt++ {
+		token, found, err := s.dapr.GetSecret(ctx, storeName, secretName)
+		if err == nil && found {
+			s.paymentProviderTokenLoaded = true
+			s.log.Info("payment provider secret loaded", logger.Fields{
+				"secret_store": storeName,
+				"secret_name":  secretName,
+				"token_length": len(token),
+			})
+			return nil
+		}
+
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("secret %s/%s not found", storeName, secretName)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return fmt.Errorf("payment provider secret unavailable after retries: %w", lastErr)
 }
 
 func (s *server) handleDaprSubscribe(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +141,51 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid payment event")
+		return
+	}
+
+	record, err := s.loadSubmissionRecord(r, event.TrackingID)
+	if err != nil {
+		s.log.Error("failed to load submission before payment", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load submission before payment")
+		return
+	}
+
+	if !isPaymentEligibleStatus(record.Status) {
+		reason := "Payment request rejected because submission is not in a payment-eligible state."
+		s.log.Error("payment request rejected due to invalid submission state", logger.Fields{
+			"tracking_id":       event.TrackingID,
+			"invoice_id":        event.InvoiceID,
+			"submission_status": record.Status,
+			"correlation_id":    event.CorrelationID,
+		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + event.TrackingID + "_payment_request_rejected_invalid_state",
+			CorrelationID: event.CorrelationID,
+			TrackingID:    event.TrackingID,
+			InvoiceID:     event.InvoiceID,
+			Service:       serviceName,
+			Action:        "payment_request_rejected_invalid_state",
+			Outcome:       "rejected",
+			Reason:        reason,
+			Fields: map[string]any{
+				"submission_status": record.Status,
+				"amount_usd":        event.AmountUSD,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    event.TrackingID,
+				"correlation_id": event.CorrelationID,
+			})
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -256,6 +338,31 @@ func (s *server) handlePaymentRequested(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) loadSubmissionRecord(r *http.Request, trackingID string) (domain.SubmissionRecord, error) {
+	var record domain.SubmissionRecord
+
+	_, err := s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+trackingID,
+		nil,
+		&record,
+	)
+
+	return record, err
+}
+
+func isPaymentEligibleStatus(status domain.SubmissionStatus) bool {
+	switch status {
+	case domain.SubmissionAutoApprovedPendingPay,
+		domain.SubmissionApprovedByHuman,
+		domain.SubmissionPaymentPending:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *server) simulatePayment(event domain.PaymentRequestedEvent, idempotencyKey string) domain.PaymentRecord {

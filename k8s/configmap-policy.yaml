@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approvalflow-policy-config
+  namespace: approvalflow
+data:
+  policy-config.json: |
+    {
+      "autonomy": {
+        "max_auto_approve_usd": 250,
+        "min_confidence": 0.85
+      },
+      "cumulative_limits": {
+        "enabled": true,
+        "max_daily_auto_approve_per_submitter_usd": 1000,
+        "max_daily_auto_approve_per_vendor_usd": 1000
+      },
+      "fx_rates_to_usd": {
+        "USD": 1.0,
+        "EUR": 1.08,
+        "GBP": 1.27,
+        "ILS": 0.27
+      },
+      "thresholds": {
+        "receipt_required_over_usd": 25,
+        "human_review_over_usd": 250,
+        "saas_monthly_limit_usd": 200,
+        "hardware_limit_usd": 1000,
+        "travel_manager_approval_over_usd": 1500,
+        "meal_client_entertainment_over_usd": 500
+      }
+    }

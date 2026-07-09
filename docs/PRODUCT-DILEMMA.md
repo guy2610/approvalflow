@@ -11,11 +11,12 @@ My approach is to let the system handle the simple low-risk cases, while forcing
 
 ## Decision
 
-For the local demo, I chose a conservative autonomy posture:
+For the local demo, I chose a conservative autonomy posture configured through `data/policy-config.json`:
 
 - maximum autonomous approval amount: USD 250
 - minimum confidence threshold: 0.80
 - deterministic hard-stop rules always override the agent
+- cumulative daily auto-approval exposure is limited per submitter and vendor
 - the agent gives recommendation context only
 - the deterministic router makes the final decision
 
@@ -85,6 +86,8 @@ This posture may escalate some cases that a smarter model could probably approve
 I accepted that tradeoff because the project is about a financial workflow, where auditability and deterministic safety boundaries matter more than maximizing automation.
 
 A production version could tune the threshold by department, vendor history, employee role, category, and past approval data.
+
+The current demo also includes a cumulative exposure guardrail. A low-value invoice can still be forced to human review if the same submitter or vendor has already accumulated too much auto-approved spend during the daily window. This prevents the simple split-invoice bypass where many small requests stay under the per-invoice ceiling but create a large total exposure.
 
 ## Known limitations
 

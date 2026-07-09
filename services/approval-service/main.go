@@ -254,7 +254,7 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) approve(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalOrWriteError(w, r, trackingID)
+	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "approve")
 	if !ok {
 		return
 	}
@@ -322,7 +322,7 @@ func (s *server) approve(w http.ResponseWriter, r *http.Request, trackingID stri
 }
 
 func (s *server) reject(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalOrWriteError(w, r, trackingID)
+	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "reject")
 	if !ok {
 		return
 	}
@@ -378,7 +378,7 @@ func (s *server) reject(w http.ResponseWriter, r *http.Request, trackingID strin
 }
 
 func (s *server) requestInfo(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalOrWriteError(w, r, trackingID)
+	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "request-info")
 	if !ok {
 		return
 	}
@@ -458,6 +458,79 @@ func (s *server) loadPendingApprovalOrWriteError(w http.ResponseWriter, r *http.
 	}
 
 	return item, true
+}
+
+func (s *server) loadPendingApprovalWithSubmissionGuardOrWriteError(w http.ResponseWriter, r *http.Request, trackingID string, action string) (domain.ApprovalItem, bool) {
+	item, ok := s.loadPendingApprovalOrWriteError(w, r, trackingID)
+	if !ok {
+		return domain.ApprovalItem{}, false
+	}
+
+	record, err := s.loadSubmissionRecord(r, trackingID)
+	if err != nil {
+		s.log.Error("failed to load submission before approval action", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    trackingID,
+			"action":         action,
+			"correlation_id": item.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load submission before approval action")
+		return domain.ApprovalItem{}, false
+	}
+
+	if record.Status != domain.SubmissionHumanReviewRequired {
+		reason := "Approval action rejected because submission is not in HUMAN_REVIEW_REQUIRED state."
+
+		s.log.Info("approval action rejected due to invalid submission state", logger.Fields{
+			"tracking_id":       trackingID,
+			"invoice_id":        item.InvoiceID,
+			"action":            action,
+			"submission_status": record.Status,
+			"approval_status":   item.Status,
+			"correlation_id":    item.CorrelationID,
+		})
+
+		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+			EventID:       "audit_" + trackingID + "_approval_action_rejected_invalid_state_" + action,
+			CorrelationID: item.CorrelationID,
+			TrackingID:    trackingID,
+			InvoiceID:     item.InvoiceID,
+			Service:       serviceName,
+			Action:        "approval_action_rejected_invalid_state",
+			Outcome:       "rejected",
+			Reason:        reason,
+			Fields: map[string]any{
+				"action":            action,
+				"submission_status": record.Status,
+				"approval_status":   item.Status,
+			},
+		}); err != nil {
+			s.log.Error("failed to publish audit event", logger.Fields{
+				"error":          err.Error(),
+				"tracking_id":    trackingID,
+				"correlation_id": item.CorrelationID,
+			})
+		}
+
+		httpx.WriteError(w, r, http.StatusConflict, reason)
+		return domain.ApprovalItem{}, false
+	}
+
+	return item, true
+}
+
+func (s *server) loadSubmissionRecord(r *http.Request, trackingID string) (domain.SubmissionRecord, error) {
+	var record domain.SubmissionRecord
+
+	_, err := s.dapr.InvokeJSON(
+		r.Context(),
+		"submission-service",
+		"internal/submissions/"+trackingID,
+		nil,
+		&record,
+	)
+
+	return record, err
 }
 
 func (s *server) applySubmissionApproval(r *http.Request, trackingID string, status domain.SubmissionStatus, reason string, actor string) error {

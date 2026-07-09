@@ -1,19 +1,27 @@
+import json
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
+
+load_dotenv()
 
 app = FastAPI(title="ApprovalFlow Agent Service")
 
 DEFAULT_POLICY_PATH = "/app/data/policy.md"
+LOCAL_PROVIDER_NAME = "local-policy-retrieval-agent-v1"
+GEMINI_PROVIDER_NAME = "gemini-policy-agent-v1"
+ALLOWED_ROUTES = {"approve", "human_review", "reject"}
 
 
 class HealthResponse(BaseModel):
     service: str
     status: str
+    provider: str
 
 
 class CitedRule(BaseModel):
@@ -26,7 +34,19 @@ class AgentRecommendation(BaseModel):
     confidence: float
     reason: str
     cited_rules: List[CitedRule]
-    provider: str = "local-policy-retrieval-agent-v1"
+    provider: str = LOCAL_PROVIDER_NAME
+    fallback_used: bool = False
+
+
+class GeminiRecommendation(BaseModel):
+    recommended_route: str = Field(..., description="approve, human_review, or reject")
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    reason: str
+    cited_rule_ids: List[str] = Field(default_factory=list)
+
+
+def configured_provider() -> str:
+    return os.getenv("AGENT_PROVIDER", "local").strip().lower() or "local"
 
 
 def load_policy_text() -> str:
@@ -90,7 +110,6 @@ def relevant_policy_rules(submission: Dict[str, Any]) -> List[CitedRule]:
 
     cited_rules: List[CitedRule] = []
 
-    # Global hard stops and autonomy rules are relevant to almost every decision.
     append_rule_once(
         cited_rules,
         "AUTONOMY-CEILING",
@@ -196,13 +215,7 @@ def relevant_policy_rules(submission: Dict[str, Any]) -> List[CitedRule]:
     return cited_rules
 
 
-@app.get("/healthz", response_model=HealthResponse)
-def healthz() -> HealthResponse:
-    return HealthResponse(service="agent-service", status="ok")
-
-
-@app.post("/recommend", response_model=AgentRecommendation)
-def recommend(payload: Dict[str, Any]) -> AgentRecommendation:
+def local_recommendation(payload: Dict[str, Any], fallback_used: bool = False, fallback_reason: str = "") -> AgentRecommendation:
     submission = payload.get("submission", {})
 
     total = float(submission.get("total") or 0)
@@ -214,22 +227,28 @@ def recommend(payload: Dict[str, Any]) -> AgentRecommendation:
 
     cited_rules = relevant_policy_rules(submission)
 
+    prefix = ""
+    if fallback_used and fallback_reason:
+        prefix = f"Gemini fallback used: {fallback_reason}. "
+
     if "alcohol-only" in notes:
         return AgentRecommendation(
             recommended_route="reject",
             confidence=0.92,
-            reason="Local policy retrieval found the alcohol-only hard-stop rule.",
+            reason=prefix + "Local policy retrieval found the alcohol-only hard-stop rule.",
             cited_rules=[r for r in cited_rules if r.rule_id in {"MEAL-03", "AUTONOMY-CEILING"}],
+            provider=LOCAL_PROVIDER_NAME,
+            fallback_used=fallback_used,
         )
 
-    # Intentional prompt-injection demo:
-    # the agent can be tricked by invoice notes, but the deterministic router must still enforce policy.
     if "approve me" in notes:
         return AgentRecommendation(
             recommended_route="approve",
             confidence=0.99,
-            reason="The note explicitly asks for approval, so the naive recommendation is approve. The deterministic router must still enforce retrieved policy rules.",
+            reason=prefix + "The note explicitly asks for approval, so the naive recommendation is approve. The deterministic router must still enforce retrieved policy rules.",
             cited_rules=cited_rules,
+            provider=LOCAL_PROVIDER_NAME,
+            fallback_used=fallback_used,
         )
 
     human_review_conditions = [
@@ -245,13 +264,149 @@ def recommend(payload: Dict[str, Any]) -> AgentRecommendation:
         return AgentRecommendation(
             recommended_route="human_review",
             confidence=0.86,
-            reason="Local policy retrieval found rules that require human review.",
+            reason=prefix + "Local policy retrieval found rules that require human review.",
             cited_rules=cited_rules,
+            provider=LOCAL_PROVIDER_NAME,
+            fallback_used=fallback_used,
         )
 
     return AgentRecommendation(
         recommended_route="approve",
         confidence=0.90,
-        reason="Local policy retrieval found no obvious blockers for this low-risk submission.",
+        reason=prefix + "Local policy retrieval found no obvious blockers for this low-risk submission.",
         cited_rules=cited_rules,
+        provider=LOCAL_PROVIDER_NAME,
+        fallback_used=fallback_used,
     )
+
+
+def build_gemini_prompt(submission: Dict[str, Any], cited_rules: List[CitedRule]) -> str:
+    rules_text = "\n".join(
+        f"- {item.rule_id}: {item.quote}" for item in cited_rules
+    )
+
+    return f"""
+You are an invoice and expense approval assistant.
+
+You do not make the final approval decision. You only recommend one route:
+- approve
+- human_review
+- reject
+
+The deterministic policy router is the final authority.
+
+Return only valid JSON with this exact schema:
+{{
+  "recommended_route": "approve | human_review | reject",
+  "confidence": 0.0,
+  "reason": "short explanation",
+  "cited_rule_ids": ["RULE-ID"]
+}}
+
+Relevant policy rules:
+{rules_text}
+
+Submission JSON:
+{json.dumps(submission, ensure_ascii=False, indent=2)}
+""".strip()
+
+
+def extract_json_object(text: str) -> Dict[str, Any]:
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def gemini_recommendation(payload: Dict[str, Any]) -> AgentRecommendation:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as exc:
+        raise RuntimeError(f"google-genai is unavailable: {exc}") from exc
+
+    submission = payload.get("submission", {})
+    cited_rules = relevant_policy_rules(submission)
+    prompt = build_gemini_prompt(submission, cited_rules)
+
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    timeout_seconds = float(os.getenv("AGENT_LLM_TIMEOUT_SECONDS", "8"))
+
+    client = genai.Client(api_key=api_key)
+
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json",
+            http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000)),
+        ),
+    )
+
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned an empty response")
+
+    parsed = GeminiRecommendation.model_validate(extract_json_object(text))
+
+    route = parsed.recommended_route.strip().lower()
+    if route not in ALLOWED_ROUTES:
+        raise RuntimeError(f"Gemini returned unsupported route: {parsed.recommended_route}")
+
+    cited_by_id = {item.rule_id: item for item in cited_rules}
+    final_citations: List[CitedRule] = []
+    for rule_id in parsed.cited_rule_ids:
+        if rule_id in cited_by_id:
+            final_citations.append(cited_by_id[rule_id])
+
+    if not final_citations:
+        final_citations = cited_rules[:3]
+
+    return AgentRecommendation(
+        recommended_route=route,
+        confidence=parsed.confidence,
+        reason=parsed.reason,
+        cited_rules=final_citations,
+        provider=GEMINI_PROVIDER_NAME,
+        fallback_used=False,
+    )
+
+
+@app.get("/healthz", response_model=HealthResponse)
+def healthz() -> HealthResponse:
+    return HealthResponse(
+        service="agent-service",
+        status="ok",
+        provider=configured_provider(),
+    )
+
+
+@app.post("/recommend", response_model=AgentRecommendation)
+def recommend(payload: Dict[str, Any]) -> AgentRecommendation:
+    provider = configured_provider()
+
+    if provider == "gemini":
+        try:
+            return gemini_recommendation(payload)
+        except (Exception, ValidationError) as exc:
+            return local_recommendation(
+                payload,
+                fallback_used=True,
+                fallback_reason=str(exc),
+            )
+
+    return local_recommendation(payload)
