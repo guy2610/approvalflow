@@ -218,6 +218,10 @@ services:
       dockerfile: services/agent-service/Dockerfile
     environment:
       PORT: 8080
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-local}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      AGENT_LLM_TIMEOUT_SECONDS: ${AGENT_LLM_TIMEOUT_SECONDS:-8}
 
   agent-service-dapr:
     image: daprio/daprd:1.14.4
