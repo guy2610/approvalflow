@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decision-service
+  namespace: approvalflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: decision-service
+  template:
+    metadata:
+      labels:
+        app: decision-service
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "decision-service"
+        dapr.io/app-port: "8080"
+    spec:
+      containers:
+        - name: decision-service
+          image: approvalflow/decision-service:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DAPR_HTTP_PORT
+              value: "3500"
+            - name: POLICY_CONFIG_PATH
+              value: /app/data/policy-config.json
+          volumeMounts:
+            - name: policy-config
+              mountPath: /app/data/policy-config.json
+              subPath: policy-config.json
+              readOnly: true
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: policy-config
+          configMap:
+            name: approvalflow-policy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: decision-service
+  namespace: approvalflow
+spec:
+  selector:
+    app: decision-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
