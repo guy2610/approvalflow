@@ -35,9 +35,9 @@ func main() {
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/submissions", srv.handleSubmissions)
 	mux.HandleFunc("/submissions/", srv.handleSubmissionByID)
-	mux.HandleFunc("/approvals", srv.handleApprovals)
-	mux.HandleFunc("/approvals/", srv.handleApprovalAction)
-	mux.HandleFunc("/audit/", srv.handleAuditTrail)
+	mux.HandleFunc("/approvals", requireDemoRole(srv.handleApprovals, "approver", "admin"))
+	mux.HandleFunc("/approvals/", requireDemoRole(srv.handleApprovalAction, "approver", "admin"))
+	mux.HandleFunc("/audit/", requireDemoRole(srv.handleAuditTrail, "auditor", "admin"))
 
 	rateLimitPerMinute := parsePositiveInt(config.GetEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120"), 120)
 	rateLimiter := httpx.NewRateLimiter(rateLimitPerMinute, time.Minute)

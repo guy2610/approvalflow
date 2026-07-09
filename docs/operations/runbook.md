@@ -31,6 +31,22 @@ GET /approvals
 
 ## Health checks
 
+Check minimal UI:
+
+````bash
+curl -i http://localhost:8080/
+````
+
+Protected demo routes require role headers:
+
+````bash
+curl -i http://localhost:8080/approvals \
+  -H "X-Demo-Role: approver"
+
+curl -i http://localhost:8080/audit/<correlation_id> \
+  -H "X-Demo-Role: auditor"
+````
+
 Check gateway health:
 
 ````bash

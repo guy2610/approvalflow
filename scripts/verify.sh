@@ -58,6 +58,45 @@ fixture() {
   printf "%s" "$out"
 }
 
+assert_http_code() {
+  local method="$1"
+  local path="$2"
+  local expected_code="$3"
+  local label="$4"
+  shift 4
+
+  local body="$TMP_DIR/http-code-${label//[^a-zA-Z0-9]/-}.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -X "$method" \
+      "$@" \
+      "$BASE_URL$path" || true
+  )"
+
+  if [ "$code" != "$expected_code" ]; then
+    printf "Unexpected response for %s:\n" "$label" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label expected HTTP $expected_code but got HTTP $code"
+  fi
+
+  pass "$label returned HTTP $expected_code"
+}
+
+run_gateway_smoke_tests() {
+  log "Smoke: UI and local role authorization"
+
+  assert_http_code "GET" "/" "200" "ui-root"
+  assert_http_code "GET" "/approvals" "403" "approvals-without-role"
+  assert_http_code "GET" "/approvals" "200" "approvals-with-approver" -H "X-Demo-Role: approver"
+  assert_http_code "GET" "/audit/smoke-authz" "403" "audit-without-role"
+  assert_http_code "GET" "/audit/smoke-authz" "200" "audit-with-auditor" -H "X-Demo-Role: auditor"
+}
+
 wait_for_gateway() {
   log "Waiting for gateway health..."
 
@@ -154,6 +193,7 @@ wait_for_approval_pending() {
   for _ in $(seq 1 60); do
     if curl -sS \
       -H "X-Correlation-Id: verify-approvals-$tracking_id" \
+      -H "X-Demo-Role: approver" \
       "$BASE_URL/approvals" |
       jq -e --arg id "$tracking_id" '.items[]? | select(.tracking_id == $id and .status == "PENDING")' >/dev/null; then
       pass "$label approval item pending"
@@ -163,7 +203,7 @@ wait_for_approval_pending() {
     sleep 1
   done
 
-  curl -sS -H "X-Correlation-Id: verify-approvals-final" "$BASE_URL/approvals" >&2 || true
+  curl -sS -H "X-Correlation-Id: verify-approvals-final" -H "X-Demo-Role: approver" "$BASE_URL/approvals" >&2 || true
   printf "\n" >&2
   fail "$label approval item did not become pending"
 }
@@ -180,6 +220,7 @@ approve_submission() {
       -w "%{http_code}" \
       -H "Content-Type: application/json" \
       -H "X-Correlation-Id: $correlation_id" \
+      -H "X-Demo-Role: approver" \
       --data '{"actor":"verification@approvalflow.local","reason":"Approved by verification command."}' \
       "$BASE_URL/approvals/$tracking_id/approve"
   )"
@@ -203,6 +244,7 @@ wait_for_audit_actions() {
   for _ in $(seq 1 60); do
     curl -sS \
       -H "X-Correlation-Id: verify-audit-$correlation_id" \
+      -H "X-Demo-Role: auditor" \
       "$BASE_URL/audit/$correlation_id" > "$body" || true
 
     local missing=0
@@ -234,6 +276,7 @@ assert_no_audit_action() {
 
   curl -sS \
     -H "X-Correlation-Id: verify-audit-no-$correlation_id" \
+    -H "X-Demo-Role: auditor" \
     "$BASE_URL/audit/$correlation_id" > "$body" || true
 
   if jq -e --arg action "$action" '.events[]? | select(.action == $action)' "$body" >/dev/null; then
@@ -275,6 +318,7 @@ assert_approval_violation() {
   for _ in $(seq 1 60); do
     if curl -sS \
       -H "X-Correlation-Id: verify-approval-violation-$tracking_id" \
+      -H "X-Demo-Role: approver" \
       "$BASE_URL/approvals" |
       jq -e --arg id "$tracking_id" --arg violation "$violation" '
         .items[]?
@@ -290,7 +334,7 @@ assert_approval_violation() {
     sleep 1
   done
 
-  curl -sS -H "X-Correlation-Id: verify-approval-violation-final" "$BASE_URL/approvals" >&2 || true
+  curl -sS -H "X-Correlation-Id: verify-approval-violation-final" -H "X-Demo-Role: approver" "$BASE_URL/approvals" >&2 || true
   printf "\n" >&2
   fail "$label approval item did not contain $violation"
 }
@@ -301,6 +345,7 @@ assert_anti_cheese_approval() {
   for _ in $(seq 1 60); do
     if curl -sS \
       -H "X-Correlation-Id: verify-prompt-injection-approvals" \
+      -H "X-Demo-Role: approver" \
       "$BASE_URL/approvals" |
       jq -e --arg id "$tracking_id" '
         .items[]?
@@ -317,7 +362,7 @@ assert_anti_cheese_approval() {
     sleep 1
   done
 
-  curl -sS -H "X-Correlation-Id: verify-prompt-injection-final" "$BASE_URL/approvals" >&2 || true
+  curl -sS -H "X-Correlation-Id: verify-prompt-injection-final" -H "X-Demo-Role: approver" "$BASE_URL/approvals" >&2 || true
   printf "\n" >&2
   fail "prompt-injection approval item not found with agent_recommended=approve"
 }
@@ -331,6 +376,7 @@ if [ "$START_STACK" = "1" ]; then
 fi
 
 wait_for_gateway
+run_gateway_smoke_tests
 
 RUN_ID="verify-$(date +%s)"
 
