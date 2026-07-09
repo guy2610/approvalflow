@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -18,8 +20,9 @@ const serviceName = "payment-service"
 const stateStore = "statestore"
 
 type server struct {
-	log  *logger.Logger
-	dapr *daprclient.Client
+	log                        *logger.Logger
+	dapr                       *daprclient.Client
+	paymentProviderTokenLoaded bool
 }
 
 type daprSubscription struct {
@@ -47,6 +50,11 @@ func main() {
 		dapr: daprclient.NewFromEnv(),
 	}
 
+	if err := srv.loadPaymentProviderSecret(context.Background()); err != nil {
+		log.Error("failed to load payment provider secret", logger.Fields{"error": err.Error()})
+		return
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", health.Handler(serviceName))
 	mux.HandleFunc("/dapr/subscribe", srv.handleDaprSubscribe)
@@ -60,6 +68,35 @@ func main() {
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
+}
+
+func (s *server) loadPaymentProviderSecret(ctx context.Context) error {
+	storeName := config.GetEnv("DAPR_SECRET_STORE_NAME", "localsecrets")
+	secretName := config.GetEnv("PAYMENT_PROVIDER_TOKEN_SECRET_NAME", "payment-provider-token")
+
+	var lastErr error
+	for attempt := 1; attempt <= 30; attempt++ {
+		token, found, err := s.dapr.GetSecret(ctx, storeName, secretName)
+		if err == nil && found {
+			s.paymentProviderTokenLoaded = true
+			s.log.Info("payment provider secret loaded", logger.Fields{
+				"secret_store": storeName,
+				"secret_name":  secretName,
+				"token_length": len(token),
+			})
+			return nil
+		}
+
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("secret %s/%s not found", storeName, secretName)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return fmt.Errorf("payment provider secret unavailable after retries: %w", lastErr)
 }
 
 func (s *server) handleDaprSubscribe(w http.ResponseWriter, r *http.Request) {
