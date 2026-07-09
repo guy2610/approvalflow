@@ -3,6 +3,8 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 START_STACK="${START_STACK:-1}"
+POLICY_CONFIG_PATH="${POLICY_CONFIG_PATH:-data/policy-config-verify.json}"
+export POLICY_CONFIG_PATH
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -294,6 +296,7 @@ assert_anti_cheese_approval() {
 
 if [ "$START_STACK" = "1" ]; then
   log "Starting fresh docker compose stack..."
+  log "Using policy config: $POLICY_CONFIG_PATH"
   docker compose down --volumes --remove-orphans >/dev/null
   docker compose up --build -d
 fi

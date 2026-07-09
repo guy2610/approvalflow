@@ -27,7 +27,7 @@
   "cumulative_limits": {
     "enabled": true,
     "window": "daily",
-    "max_auto_approved_per_submitter_usd": 1000,
-    "max_auto_approved_per_vendor_usd": 1000
+    "max_auto_approved_per_submitter_usd": 300,
+    "max_auto_approved_per_vendor_usd": 300
   }
 }

@@ -332,6 +332,8 @@ This prevents split-invoice bypass.
 
 Run the full local verification harness:
 
+The verification harness starts the stack with `POLICY_CONFIG_PATH=data/policy-config-verify.json` by default. This verify-specific config keeps the cumulative budget scenario short and deterministic while leaving the default demo policy in `data/policy-config.json`.
+
 ````bash
 ./scripts/verify.sh
 ````
