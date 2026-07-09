@@ -352,6 +352,7 @@ The verification harness checks the main verification scenarios:
 | `INV-1007` | Duplicate submission, no second payment. |
 | `INV-1012` | Human approval followed by simulated payment failure. |
 | `INV-1013` | Prompt-injection text cannot bypass router. |
+| `INV-1020` / `INV-1021` | Cumulative exposure guardrail blocks split-invoice bypass. |
 
 ## Production gaps
 

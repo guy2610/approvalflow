@@ -237,6 +237,34 @@ assert_no_audit_action() {
   pass "$correlation_id does not contain $action"
 }
 
+assert_approval_violation() {
+  local tracking_id="$1"
+  local violation="$2"
+  local label="$3"
+
+  for _ in $(seq 1 60); do
+    if curl -sS \
+      -H "X-Correlation-Id: verify-approval-violation-$tracking_id" \
+      "$BASE_URL/approvals" |
+      jq -e --arg id "$tracking_id" --arg violation "$violation" '
+        .items[]?
+        | select(
+            .tracking_id == $id
+            and (.violations[]? == $violation)
+          )
+      ' >/dev/null; then
+      pass "$label approval item contains $violation"
+      return
+    fi
+
+    sleep 1
+  done
+
+  curl -sS -H "X-Correlation-Id: verify-approval-violation-final" "$BASE_URL/approvals" >&2 || true
+  printf "\n" >&2
+  fail "$label approval item did not contain $violation"
+}
+
 assert_anti_cheese_approval() {
   local tracking_id="$1"
 
@@ -353,6 +381,35 @@ wait_for_audit_actions "$CORR_1012" \
   "approval_item_queued" \
   "human_approved" \
   "payment_failed_compensated"
+
+log "Scenario: cumulative autonomy budget blocks split-invoice bypass"
+CORR_1020="$RUN_ID-1020"
+RESP_1020="$(submit_invoice "INV-1020" "$CORR_1020" "202")"
+TRACK_1020="$(printf "%s" "$RESP_1020" | jq -r '.tracking_id')"
+
+[ "$TRACK_1020" != "null" ] && [ -n "$TRACK_1020" ] || fail "INV-1020 missing tracking_id"
+
+wait_for_submission_status "$TRACK_1020" "PAID" "INV-1020"
+wait_for_audit_actions "$CORR_1020" \
+  "submission_accepted" \
+  "decision_produced" \
+  "payment_requested_published" \
+  "payment_succeeded"
+
+CORR_1021="$RUN_ID-1021"
+RESP_1021="$(submit_invoice "INV-1021" "$CORR_1021" "202")"
+TRACK_1021="$(printf "%s" "$RESP_1021" | jq -r '.tracking_id')"
+
+[ "$TRACK_1021" != "null" ] && [ -n "$TRACK_1021" ] || fail "INV-1021 missing tracking_id"
+
+wait_for_submission_status "$TRACK_1021" "HUMAN_REVIEW_REQUIRED" "INV-1021"
+wait_for_approval_pending "$TRACK_1021" "INV-1021"
+assert_approval_violation "$TRACK_1021" "AUTONOMY-BUDGET" "INV-1021"
+wait_for_audit_actions "$CORR_1021" \
+  "submission_accepted" \
+  "decision_produced" \
+  "approval_required_published" \
+  "approval_item_queued"
 
 log "Prompt-injection: INV-1013 prompt injection cannot auto-approve"
 CORR_1013="$RUN_ID-1013"
