@@ -3,14 +3,21 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 START_STACK="${START_STACK:-1}"
-POLICY_CONFIG_PATH="${POLICY_CONFIG_PATH:-data/policy-config-verify.json}"
+VERIFY_POLICY_TEMPLATE="${VERIFY_POLICY_TEMPLATE:-data/policy-config-verify.json}"
+POLICY_CONFIG_PATH="${POLICY_CONFIG_PATH:-data/.policy-config-verify-runtime.json}"
 export POLICY_CONFIG_PATH
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+cleanup() {
+  rm -rf "$TMP_DIR"
+  if [ "$POLICY_CONFIG_PATH" = "data/.policy-config-verify-runtime.json" ]; then
+    rm -f "$POLICY_CONFIG_PATH"
+  fi
+}
+trap cleanup EXIT
 
 PASSED=0
 FAILED=0
@@ -239,6 +246,27 @@ assert_no_audit_action() {
   pass "$correlation_id does not contain $action"
 }
 
+lower_runtime_policy_ceiling() {
+  local ceiling="$1"
+
+  python3 - "$POLICY_CONFIG_PATH" "$ceiling" <<'PYINNER'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+ceiling = float(sys.argv[2])
+
+cfg = json.loads(path.read_text())
+cfg.setdefault("autonomy", {})
+cfg["autonomy"]["max_auto_approve_usd"] = ceiling
+
+path.write_text(json.dumps(cfg, indent=2) + "\n")
+PYINNER
+
+  pass "runtime policy max_auto_approve_usd lowered to $ceiling"
+}
+
 assert_approval_violation() {
   local tracking_id="$1"
   local violation="$2"
@@ -296,6 +324,7 @@ assert_anti_cheese_approval() {
 
 if [ "$START_STACK" = "1" ]; then
   log "Starting fresh docker compose stack..."
+  cp "$VERIFY_POLICY_TEMPLATE" "$POLICY_CONFIG_PATH"
   log "Using policy config: $POLICY_CONFIG_PATH"
   docker compose down --volumes --remove-orphans >/dev/null
   docker compose up --build -d
@@ -427,6 +456,23 @@ wait_for_audit_actions "$CORR_1013" \
   "submission_accepted" \
   "approval_required_published" \
   "decision_produced" \
+  "approval_item_queued"
+
+log "Scenario: runtime policy config reload without rebuild"
+lower_runtime_policy_ceiling "50"
+
+CORR_1022="$RUN_ID-1022"
+RESP_1022="$(submit_invoice "INV-1022" "$CORR_1022" "202")"
+TRACK_1022="$(printf "%s" "$RESP_1022" | jq -r '.tracking_id')"
+
+[ "$TRACK_1022" != "null" ] && [ -n "$TRACK_1022" ] || fail "INV-1022 missing tracking_id"
+
+wait_for_submission_status "$TRACK_1022" "HUMAN_REVIEW_REQUIRED" "INV-1022"
+wait_for_approval_pending "$TRACK_1022" "INV-1022"
+wait_for_audit_actions "$CORR_1022" \
+  "submission_accepted" \
+  "decision_produced" \
+  "approval_required_published" \
   "approval_item_queued"
 
 log "Verification summary"

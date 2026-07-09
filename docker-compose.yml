@@ -90,6 +90,8 @@ services:
     environment:
       PORT: 8080
       POLICY_CONFIG_PATH: ${POLICY_CONFIG_PATH:-data/policy-config.json}
+    volumes:
+      - ./data:/app/data:ro
 
   decision-service-dapr:
     image: daprio/daprd:1.14.4

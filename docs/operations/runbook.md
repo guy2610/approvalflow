@@ -312,6 +312,8 @@ Common config issues:
 
 This is intentional. A financial workflow should fail closed when policy config is invalid.
 
+For local runtime policy changes, edit the mounted policy config file under `data/`. `decision-service` reloads the policy config for each new decision, so the next submitted invoice uses the updated thresholds without rebuilding the image. The verification harness demonstrates this behavior with `INV-1022`.
+
 ## Problem: many small invoices are routed to human review
 
 Check decision reason and violations.

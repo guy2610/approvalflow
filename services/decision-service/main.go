@@ -26,7 +26,6 @@ const agentServiceAppID = "agent-service"
 type server struct {
 	log  *logger.Logger
 	dapr *daprclient.Client
-	cfg  policy.Config
 }
 
 type autonomyDailyExposure struct {
@@ -70,7 +69,6 @@ func main() {
 	srv := &server{
 		log:  log,
 		dapr: daprclient.NewFromEnv(),
-		cfg:  policyCfg,
 	}
 
 	mux := http.NewServeMux()
@@ -133,6 +131,25 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	policyCfg, err := policy.LoadConfigFromEnv()
+	if err != nil {
+		s.log.Error("failed to reload policy config", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reload policy config")
+		return
+	}
+
+	s.log.Info("policy config reloaded for decision", logger.Fields{
+		"tracking_id":          event.TrackingID,
+		"correlation_id":       event.CorrelationID,
+		"autonomy_ceiling_usd": policyCfg.AutonomyCeilingUSD,
+		"min_confidence":       policyCfg.MinConfidence,
+		"cumulative_enabled":   policyCfg.CumulativeAutonomyEnabled,
+	})
+
 	var record domain.SubmissionRecord
 	status, err := s.dapr.InvokeJSON(
 		r.Context(),
@@ -161,7 +178,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	decision := policy.Evaluate(record.Request, s.cfg)
+	decision := policy.Evaluate(record.Request, policyCfg)
 	decision.TrackingID = event.TrackingID
 	decision.InvoiceID = event.InvoiceID
 	decision.CorrelationID = event.CorrelationID
@@ -170,7 +187,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	}
 
 	var budgetAdjusted bool
-	decision, budgetAdjusted = s.applyCumulativeAutonomyBudget(r.Context(), record.Request, decision, event)
+	decision, budgetAdjusted = s.applyCumulativeAutonomyBudget(r.Context(), record.Request, decision, event, policyCfg)
 	if budgetAdjusted {
 		s.log.Info("auto-approval converted to human review by cumulative autonomy budget", logger.Fields{
 			"tracking_id":    event.TrackingID,
@@ -366,8 +383,8 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.SubmissionRequest, decision domain.DecisionResult, event domain.SubmissionReceivedEvent) (domain.DecisionResult, bool) {
-	if !s.cfg.CumulativeAutonomyEnabled || decision.Route != domain.RouteAutoApprove {
+func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.SubmissionRequest, decision domain.DecisionResult, event domain.SubmissionReceivedEvent, cfg policy.Config) (domain.DecisionResult, bool) {
+	if !cfg.CumulativeAutonomyEnabled || decision.Route != domain.RouteAutoApprove {
 		return decision, false
 	}
 
@@ -416,7 +433,7 @@ func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.S
 		VendorApprovedTodayUSD:    exposure.VendorTotals[vendorKey],
 	}
 
-	adjusted := policy.ApplyCumulativeAutonomyBudget(decision, s.cfg, budgetContext)
+	adjusted := policy.ApplyCumulativeAutonomyBudget(decision, cfg, budgetContext)
 	if adjusted.Route != domain.RouteAutoApprove {
 		return adjusted, true
 	}
