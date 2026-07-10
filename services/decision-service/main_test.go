@@ -81,3 +81,49 @@ func TestAutonomyDateKeyFallsBackToDecisionDate(t *testing.T) {
 		t.Fatalf("expected decision date fallback, got %s", got)
 	}
 }
+
+func TestDecisionAuditEventIDIsStableForRetry(t *testing.T) {
+	event := domain.SubmissionReceivedEvent{
+		EventID:    "evt_revision_2",
+		TrackingID: "sub-123",
+	}
+
+	first := decisionAuditEventID(event, "decision_produced")
+	second := decisionAuditEventID(event, "decision_produced")
+
+	if first != second {
+		t.Fatalf("expected retry-stable audit id, got %q and %q", first, second)
+	}
+}
+
+func TestDecisionAuditEventIDDiffersAcrossRevisions(t *testing.T) {
+	firstEvent := domain.SubmissionReceivedEvent{
+		EventID:    "evt_initial",
+		TrackingID: "sub-123",
+	}
+	secondEvent := domain.SubmissionReceivedEvent{
+		EventID:    "evt_additional_info_sub-123_2",
+		TrackingID: "sub-123",
+	}
+
+	first := decisionAuditEventID(firstEvent, "decision_produced")
+	second := decisionAuditEventID(secondEvent, "decision_produced")
+
+	if first == second {
+		t.Fatalf("expected different audit ids across revisions, got %q", first)
+	}
+}
+
+func TestDecisionAuditEventIDDiffersAcrossActions(t *testing.T) {
+	event := domain.SubmissionReceivedEvent{
+		EventID:    "evt_revision_2",
+		TrackingID: "sub-123",
+	}
+
+	decisionID := decisionAuditEventID(event, "decision_produced")
+	approvalID := decisionAuditEventID(event, "approval_required_published")
+
+	if decisionID == approvalID {
+		t.Fatalf("expected different audit ids across actions, got %q", decisionID)
+	}
+}

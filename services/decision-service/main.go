@@ -262,7 +262,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		})
 
 		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-			EventID:       "audit_" + event.TrackingID + "_payment_requested_by_decision",
+			EventID:       decisionAuditEventID(event, "payment_requested_by_decision"),
 			CorrelationID: event.CorrelationID,
 			TrackingID:    event.TrackingID,
 			InvoiceID:     event.InvoiceID,
@@ -319,7 +319,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		})
 
 		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-			EventID:       "audit_" + event.TrackingID + "_approval_required_published",
+			EventID:       decisionAuditEventID(event, "approval_required_published"),
 			CorrelationID: event.CorrelationID,
 			TrackingID:    event.TrackingID,
 			InvoiceID:     event.InvoiceID,
@@ -357,7 +357,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	})
 
 	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-		EventID:       "audit_" + event.TrackingID + "_decision_produced",
+		EventID:       decisionAuditEventID(event, "decision_produced"),
 		CorrelationID: event.CorrelationID,
 		TrackingID:    event.TrackingID,
 		InvoiceID:     event.InvoiceID,
@@ -542,4 +542,11 @@ func violationIDs(violations []domain.PolicyViolation) []string {
 		out = append(out, violation.RuleID)
 	}
 	return out
+}
+
+func decisionAuditEventID(
+	event domain.SubmissionReceivedEvent,
+	action string,
+) string {
+	return "audit_" + event.TrackingID + "_" + action + "_" + event.EventID
 }
