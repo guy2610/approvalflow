@@ -82,28 +82,65 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/submissions/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing submission path")
+		return
+	}
+
+	if strings.HasSuffix(path, "/additional-info") {
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		defer r.Body.Close()
+
+		status, raw, err := s.dapr.InvokeRawPassthrough(
+			r.Context(),
+			"submission-service",
+			"submissions/"+path,
+			http.MethodPost,
+			body,
+		)
+		if err != nil {
+			s.log.Error("submission service unavailable", logger.Fields{
+				"error":          err.Error(),
+				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+			})
+			httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
+			return
+		}
+
+		writeRawJSON(w, status, raw)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	trackingID := strings.TrimPrefix(r.URL.Path, "/submissions/")
-	if trackingID == "" {
-		httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
-		return
-	}
-
-	status, raw, err := s.dapr.InvokeRaw(r.Context(), "submission-service", "submissions/"+trackingID, http.MethodGet, nil)
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"submission-service",
+		"submissions/"+path,
+		http.MethodGet,
+		nil,
+	)
 	if err != nil {
-		s.log.Error("submission status invocation failed", logger.Fields{
+		s.log.Error("submission service unavailable", logger.Fields{
 			"error":          err.Error(),
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
-
-		if status == 0 {
-			httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
-			return
-		}
+		httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
+		return
 	}
 
 	writeRawJSON(w, status, raw)

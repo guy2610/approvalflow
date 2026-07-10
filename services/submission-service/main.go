@@ -18,6 +18,7 @@ import (
 	"approvalflow/internal/platform/health"
 	"approvalflow/internal/platform/httpx"
 	"approvalflow/internal/platform/logger"
+	"approvalflow/internal/workflow"
 )
 
 const serviceName = "submission-service"
@@ -131,9 +132,13 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	trackingID := "sub_" + randomHex(12)
 
+	correlationID := httpx.CorrelationIDFromContext(r.Context())
+
 	record := domain.SubmissionRecord{
 		TrackingID:        trackingID,
 		OriginalInvoiceID: req.ID,
+		CorrelationID:     correlationID,
+		RevisionNumber:    1,
 		Status:            domain.SubmissionAccepted,
 		Reason:            "Submission accepted for asynchronous processing.",
 		Duplicate:         false,
@@ -220,18 +225,36 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/submissions/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
+		return
+	}
+
+	if strings.HasSuffix(path, "/additional-info") {
+		trackingID := strings.TrimSuffix(path, "/additional-info")
+		trackingID = strings.Trim(trackingID, "/")
+		if trackingID == "" {
+			httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
+			return
+		}
+
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		s.applyAdditionalInfo(w, r, trackingID)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	trackingID := strings.TrimPrefix(r.URL.Path, "/submissions/")
-	if trackingID == "" {
-		httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
-		return
-	}
-
-	s.getSubmissionRecord(w, r, trackingID)
+	s.getSubmissionRecord(w, r, path)
 }
 
 func (s *server) handleInternalSubmission(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +347,17 @@ func (s *server) applyDecision(w http.ResponseWriter, r *http.Request, trackingI
 		return
 	}
 
+	if err := workflow.ValidateTransition(record.Status, req.Status); err != nil {
+		s.log.Info("submission status transition rejected", logger.Fields{
+			"tracking_id": trackingID,
+			"from_status": record.Status,
+			"to_status":   req.Status,
+			"error":       err.Error(),
+		})
+		httpx.WriteError(w, r, http.StatusConflict, err.Error())
+		return
+	}
+
 	record.Status = req.Status
 	record.Reason = req.Reason
 	record.UpdatedAtUTC = time.Now().UTC()
@@ -355,6 +389,17 @@ func (s *server) applyPayment(w http.ResponseWriter, r *http.Request, trackingID
 		return
 	}
 
+	if err := workflow.ValidateTransition(record.Status, req.Status); err != nil {
+		s.log.Info("submission status transition rejected", logger.Fields{
+			"tracking_id": trackingID,
+			"from_status": record.Status,
+			"to_status":   req.Status,
+			"error":       err.Error(),
+		})
+		httpx.WriteError(w, r, http.StatusConflict, err.Error())
+		return
+	}
+
 	record.Status = req.Status
 	record.Reason = req.Reason
 	record.UpdatedAtUTC = time.Now().UTC()
@@ -383,6 +428,17 @@ func (s *server) applyApproval(w http.ResponseWriter, r *http.Request, trackingI
 
 	if !found {
 		httpx.WriteError(w, r, http.StatusNotFound, "submission not found")
+		return
+	}
+
+	if err := workflow.ValidateTransition(record.Status, req.Status); err != nil {
+		s.log.Info("submission status transition rejected", logger.Fields{
+			"tracking_id": trackingID,
+			"from_status": record.Status,
+			"to_status":   req.Status,
+			"error":       err.Error(),
+		})
+		httpx.WriteError(w, r, http.StatusConflict, err.Error())
 		return
 	}
 
@@ -437,4 +493,161 @@ func randomHex(size int) string {
 func decodeJSON(r *http.Request, out any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(out)
+}
+
+func (s *server) applyAdditionalInfo(w http.ResponseWriter, r *http.Request, trackingID string) {
+	var req domain.AdditionalInfoRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid additional info payload")
+		return
+	}
+
+	var record domain.SubmissionRecord
+	found, err := s.dapr.GetState(
+		r.Context(),
+		stateStore,
+		"submission:"+trackingID,
+		&record,
+	)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to read submission")
+		return
+	}
+	if !found {
+		httpx.WriteError(w, r, http.StatusNotFound, "submission not found")
+		return
+	}
+
+	if record.Status != domain.SubmissionInfoRequested {
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusConflict,
+			"additional information is accepted only while submission status is INFO_REQUESTED",
+		)
+		return
+	}
+
+	if err := applyAdditionalInfoToRecord(&record, req); err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := workflow.ValidateTransition(
+		record.Status,
+		domain.SubmissionProcessing,
+	); err != nil {
+		httpx.WriteError(w, r, http.StatusConflict, err.Error())
+		return
+	}
+
+	record.Status = domain.SubmissionProcessing
+	record.Reason = "Additional information received; submission returned for policy evaluation."
+	record.RevisionNumber++
+	record.UpdatedAtUTC = time.Now().UTC()
+
+	if record.RevisionNumber <= 1 {
+		record.RevisionNumber = 2
+	}
+
+	if record.CorrelationID == "" {
+		record.CorrelationID = httpx.CorrelationIDFromContext(r.Context())
+	}
+
+	if err := s.dapr.SaveState(
+		r.Context(),
+		stateStore,
+		"submission:"+trackingID,
+		record,
+	); err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save additional information")
+		return
+	}
+
+	now := time.Now().UTC()
+	event := domain.SubmissionReceivedEvent{
+		EventID:       "evt_additional_info_" + trackingID + "_" + strconv.Itoa(record.RevisionNumber),
+		EventType:     domain.TopicSubmissionReceived,
+		CorrelationID: record.CorrelationID,
+		TrackingID:    trackingID,
+		InvoiceID:     record.OriginalInvoiceID,
+		OccurredAtUTC: now,
+	}
+
+	if err := s.dapr.PublishEvent(
+		r.Context(),
+		domain.PubSubName,
+		domain.TopicSubmissionReceived,
+		event,
+	); err != nil {
+		s.log.Error("failed to republish submission after additional info", logger.Fields{
+			"error":           err.Error(),
+			"tracking_id":     trackingID,
+			"revision_number": record.RevisionNumber,
+			"correlation_id":  record.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to resume submission processing")
+		return
+	}
+
+	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+		EventID:       "audit_" + trackingID + "_additional_info_submitted_" + strconv.Itoa(record.RevisionNumber),
+		CorrelationID: record.CorrelationID,
+		TrackingID:    trackingID,
+		InvoiceID:     record.OriginalInvoiceID,
+		Service:       serviceName,
+		Action:        "additional_info_submitted",
+		Outcome:       string(record.Status),
+		Reason:        record.Reason,
+		Fields: map[string]any{
+			"revision_number":   record.RevisionNumber,
+			"notes_updated":     req.Notes != nil,
+			"receipt_updated":   req.ReceiptPresent != nil,
+			"attendees_updated": req.Attendees != nil,
+		},
+	}); err != nil {
+		s.log.Error("failed to publish additional info audit event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    trackingID,
+			"correlation_id": record.CorrelationID,
+		})
+	}
+
+	httpx.WriteJSON(w, http.StatusAccepted, record)
+}
+
+func applyAdditionalInfoToRecord(
+	record *domain.SubmissionRecord,
+	req domain.AdditionalInfoRequest,
+) error {
+	if record == nil {
+		return fmt.Errorf("submission record is required")
+	}
+
+	if req.Notes == nil &&
+		req.ReceiptPresent == nil &&
+		req.Attendees == nil {
+		return fmt.Errorf("at least one additional information field is required")
+	}
+
+	if req.Notes != nil {
+		notes := strings.TrimSpace(*req.Notes)
+		if notes == "" {
+			return fmt.Errorf("notes cannot be empty when provided")
+		}
+		record.Request.Notes = notes
+	}
+
+	if req.ReceiptPresent != nil {
+		record.Request.ReceiptPresent = *req.ReceiptPresent
+	}
+
+	if req.Attendees != nil {
+		if *req.Attendees <= 0 {
+			return fmt.Errorf("attendees must be positive when provided")
+		}
+		record.Request.Attendees = req.Attendees
+	}
+
+	return nil
 }

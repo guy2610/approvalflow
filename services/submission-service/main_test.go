@@ -127,3 +127,65 @@ func TestDuplicateFingerprintChangesWhenBusinessIdentityChanges(t *testing.T) {
 		t.Fatalf("expected total change to change duplicate fingerprint")
 	}
 }
+
+func TestApplyAdditionalInfoToRecord(t *testing.T) {
+	notes := "Client: Contoso. Business justification added."
+	receiptPresent := true
+	attendees := 11
+
+	record := domain.SubmissionRecord{
+		Request: validSubmissionRequestForTest(),
+	}
+
+	err := applyAdditionalInfoToRecord(&record, domain.AdditionalInfoRequest{
+		Notes:          &notes,
+		ReceiptPresent: &receiptPresent,
+		Attendees:      &attendees,
+	})
+	if err != nil {
+		t.Fatalf("expected additional info to be accepted: %v", err)
+	}
+
+	if record.Request.Notes != notes {
+		t.Fatalf("expected notes to be updated")
+	}
+
+	if !record.Request.ReceiptPresent {
+		t.Fatalf("expected receiptPresent to be updated")
+	}
+
+	if record.Request.Attendees == nil || *record.Request.Attendees != attendees {
+		t.Fatalf("expected attendees to be updated")
+	}
+}
+
+func TestApplyAdditionalInfoToRecordRequiresAtLeastOneField(t *testing.T) {
+	record := domain.SubmissionRecord{
+		Request: validSubmissionRequestForTest(),
+	}
+
+	err := applyAdditionalInfoToRecord(
+		&record,
+		domain.AdditionalInfoRequest{},
+	)
+	if err == nil {
+		t.Fatalf("expected empty additional info payload to be rejected")
+	}
+}
+
+func TestApplyAdditionalInfoToRecordRejectsInvalidAttendees(t *testing.T) {
+	attendees := 0
+	record := domain.SubmissionRecord{
+		Request: validSubmissionRequestForTest(),
+	}
+
+	err := applyAdditionalInfoToRecord(
+		&record,
+		domain.AdditionalInfoRequest{
+			Attendees: &attendees,
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected non-positive attendees to be rejected")
+	}
+}
