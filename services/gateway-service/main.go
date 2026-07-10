@@ -38,6 +38,7 @@ func main() {
 	mux.HandleFunc("/approvals", requireDemoRole(srv.handleApprovals, "approver", "admin"))
 	mux.HandleFunc("/approvals/", requireDemoRole(srv.handleApprovalAction, "approver", "admin"))
 	mux.HandleFunc("/audit/", requireDemoRole(srv.handleAuditTrail, "auditor", "admin"))
+	mux.HandleFunc("/analytics/summary", requireDemoRole(srv.handleAnalyticsSummary, "controller", "admin"))
 
 	rateLimitPerMinute := parsePositiveInt(config.GetEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120"), 120)
 	rateLimiter := httpx.NewRateLimiter(rateLimitPerMinute, time.Minute)
@@ -217,6 +218,31 @@ func (s *server) handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
 		httpx.WriteError(w, r, http.StatusBadGateway, "audit service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"audit-service",
+		"analytics/summary",
+		http.MethodGet,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("analytics service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "analytics service unavailable")
 		return
 	}
 

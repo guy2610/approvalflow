@@ -95,6 +95,8 @@ run_gateway_smoke_tests() {
   assert_http_code "GET" "/approvals" "200" "approvals-with-approver" -H "X-Demo-Role: approver"
   assert_http_code "GET" "/audit/smoke-authz" "403" "audit-without-role"
   assert_http_code "GET" "/audit/smoke-authz" "200" "audit-with-auditor" -H "X-Demo-Role: auditor"
+  assert_http_code "GET" "/analytics/summary" "403" "analytics-without-role"
+  assert_http_code "GET" "/analytics/summary" "200" "analytics-with-controller" -H "X-Demo-Role: controller"
 }
 
 wait_for_gateway() {
@@ -425,6 +427,49 @@ assert_no_audit_action() {
   pass "$correlation_id does not contain $action"
 }
 
+assert_analytics_summary() {
+  local body="$TMP_DIR/analytics-summary.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -H "X-Correlation-Id: verify-analytics-summary" \
+      -H "X-Demo-Role: controller" \
+      "$BASE_URL/analytics/summary" || true
+  )"
+
+  if [ "$code" != "200" ]; then
+    printf "Analytics response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "analytics summary expected HTTP 200 but got HTTP $code"
+  fi
+
+  if ! jq -e '
+    .total_submissions >= 8
+    and .completed_submissions >= 4
+    and .auto_approved_count >= 2
+    and .human_review_count >= 4
+    and .human_approved_count >= 2
+    and .payment_failed_count >= 1
+    and .auto_approved_amount_usd > 0
+    and .human_approved_amount_usd > 0
+    and .human_review_rate >= 0
+    and .human_review_rate <= 1
+    and .auto_approval_rate >= 0
+    and .auto_approval_rate <= 1
+  ' "$body" >/dev/null; then
+    printf "Analytics response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "analytics summary did not contain the expected workflow metrics"
+  fi
+
+  pass "analytics summary contains throughput, route, money, and failure metrics"
+}
+
 lower_runtime_policy_ceiling() {
   local ceiling="$1"
 
@@ -672,6 +717,9 @@ wait_for_audit_actions "$CORR_1022" \
   "decision_produced" \
   "approval_required_published" \
   "approval_item_queued"
+
+log "Controller analytics summary"
+assert_analytics_summary
 
 log "Verification summary"
 printf "PASS count: %d\n" "$PASSED"

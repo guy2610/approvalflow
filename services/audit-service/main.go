@@ -54,6 +54,7 @@ func main() {
 	mux.HandleFunc("/dapr/subscribe", srv.handleDaprSubscribe)
 	mux.HandleFunc("/events/audit", srv.handleAuditEvent)
 	mux.HandleFunc("/audit/", srv.handleAuditTrail)
+	mux.HandleFunc("/analytics/summary", srv.handleAnalyticsSummary)
 
 	handler := httpx.CorrelationMiddleware(mux)
 
@@ -125,6 +126,32 @@ func (s *server) handleAuditEvent(w http.ResponseWriter, r *http.Request) {
 			"action":         event.Action,
 		})
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	var analytics analyticsState
+	analyticsFound, err := s.dapr.GetState(
+		r.Context(),
+		stateStore,
+		analyticsStateKey(),
+		&analytics,
+	)
+	if err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load analytics state")
+		return
+	}
+	if !analyticsFound {
+		analytics = newAnalyticsState()
+	}
+
+	analytics = applyAuditEventToAnalytics(analytics, event)
+	if err := s.dapr.SaveState(
+		r.Context(),
+		stateStore,
+		analyticsStateKey(),
+		analytics,
+	); err != nil {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update analytics state")
 		return
 	}
 
@@ -228,4 +255,243 @@ func auditEventKey(eventID string) string {
 
 func auditIndexKey(correlationID string) string {
 	return "audit:index:" + correlationID
+}
+
+type analyticsState struct {
+	Summary                  domain.AnalyticsSummary `json:"summary"`
+	ProcessedEventIDs        map[string]bool         `json:"processed_event_ids"`
+	SubmissionTrackingIDs    map[string]bool         `json:"submission_tracking_ids"`
+	AutoApprovedTrackingIDs  map[string]bool         `json:"auto_approved_tracking_ids"`
+	HumanReviewTrackingIDs   map[string]bool         `json:"human_review_tracking_ids"`
+	HumanApprovedTrackingIDs map[string]bool         `json:"human_approved_tracking_ids"`
+	RejectedTrackingIDs      map[string]bool         `json:"rejected_tracking_ids"`
+	PaymentFailedTrackingIDs map[string]bool         `json:"payment_failed_tracking_ids"`
+	CompletedTrackingIDs     map[string]bool         `json:"completed_tracking_ids"`
+}
+
+func newAnalyticsState() analyticsState {
+	return analyticsState{
+		ProcessedEventIDs:        map[string]bool{},
+		SubmissionTrackingIDs:    map[string]bool{},
+		AutoApprovedTrackingIDs:  map[string]bool{},
+		HumanReviewTrackingIDs:   map[string]bool{},
+		HumanApprovedTrackingIDs: map[string]bool{},
+		RejectedTrackingIDs:      map[string]bool{},
+		PaymentFailedTrackingIDs: map[string]bool{},
+		CompletedTrackingIDs:     map[string]bool{},
+	}
+}
+
+func normalizeAnalyticsState(state analyticsState) analyticsState {
+	if state.ProcessedEventIDs == nil {
+		state.ProcessedEventIDs = map[string]bool{}
+	}
+	if state.SubmissionTrackingIDs == nil {
+		state.SubmissionTrackingIDs = map[string]bool{}
+	}
+	if state.AutoApprovedTrackingIDs == nil {
+		state.AutoApprovedTrackingIDs = map[string]bool{}
+	}
+	if state.HumanReviewTrackingIDs == nil {
+		state.HumanReviewTrackingIDs = map[string]bool{}
+	}
+	if state.HumanApprovedTrackingIDs == nil {
+		state.HumanApprovedTrackingIDs = map[string]bool{}
+	}
+	if state.RejectedTrackingIDs == nil {
+		state.RejectedTrackingIDs = map[string]bool{}
+	}
+	if state.PaymentFailedTrackingIDs == nil {
+		state.PaymentFailedTrackingIDs = map[string]bool{}
+	}
+	if state.CompletedTrackingIDs == nil {
+		state.CompletedTrackingIDs = map[string]bool{}
+	}
+	return state
+}
+
+func applyAuditEventToAnalytics(
+	state analyticsState,
+	event domain.AuditEvent,
+) analyticsState {
+	state = normalizeAnalyticsState(state)
+
+	if event.EventID == "" || state.ProcessedEventIDs[event.EventID] {
+		return state
+	}
+	state.ProcessedEventIDs[event.EventID] = true
+
+	trackingID := event.TrackingID
+	if trackingID == "" {
+		return refreshAnalyticsRates(state)
+	}
+
+	switch event.Action {
+	case "submission_accepted":
+		if !state.SubmissionTrackingIDs[trackingID] {
+			state.SubmissionTrackingIDs[trackingID] = true
+			state.Summary.TotalSubmissions++
+		}
+
+	case "decision_produced":
+		route := analyticsStringField(event, "route")
+		if route == "" {
+			route = event.Outcome
+		}
+
+		switch route {
+		case string(domain.RouteAutoApprove):
+			if !state.AutoApprovedTrackingIDs[trackingID] {
+				state.AutoApprovedTrackingIDs[trackingID] = true
+				state.Summary.AutoApprovedCount++
+				state.Summary.AutoApprovedAmountUSD += analyticsNumberField(event, "amount_usd")
+			}
+
+		case string(domain.RouteHumanReview):
+			if !state.HumanReviewTrackingIDs[trackingID] {
+				state.HumanReviewTrackingIDs[trackingID] = true
+				state.Summary.HumanReviewCount++
+			}
+
+		case string(domain.RouteReject):
+			markAnalyticsRejected(&state, trackingID)
+		}
+
+	case "human_approved":
+		if !state.HumanApprovedTrackingIDs[trackingID] {
+			state.HumanApprovedTrackingIDs[trackingID] = true
+			state.Summary.HumanApprovedCount++
+			state.Summary.HumanApprovedAmountUSD += analyticsNumberField(event, "amount_usd")
+		}
+
+	case "human_rejected":
+		markAnalyticsRejected(&state, trackingID)
+
+	case "payment_succeeded":
+		markAnalyticsCompleted(&state, trackingID)
+
+	case "payment_failed_compensated":
+		if !state.PaymentFailedTrackingIDs[trackingID] {
+			state.PaymentFailedTrackingIDs[trackingID] = true
+			state.Summary.PaymentFailedCount++
+		}
+		markAnalyticsCompleted(&state, trackingID)
+	}
+
+	state.Summary.UpdatedAtUTC = event.OccurredAtUTC
+	return refreshAnalyticsRates(state)
+}
+
+func markAnalyticsRejected(state *analyticsState, trackingID string) {
+	if !state.RejectedTrackingIDs[trackingID] {
+		state.RejectedTrackingIDs[trackingID] = true
+		state.Summary.RejectedCount++
+	}
+	markAnalyticsCompleted(state, trackingID)
+}
+
+func markAnalyticsCompleted(state *analyticsState, trackingID string) {
+	if !state.CompletedTrackingIDs[trackingID] {
+		state.CompletedTrackingIDs[trackingID] = true
+		state.Summary.CompletedSubmissions++
+	}
+}
+
+func refreshAnalyticsRates(state analyticsState) analyticsState {
+	if state.Summary.TotalSubmissions <= 0 {
+		state.Summary.HumanReviewRate = 0
+		state.Summary.AutoApprovalRate = 0
+		return state
+	}
+
+	total := float64(state.Summary.TotalSubmissions)
+	state.Summary.HumanReviewRate = float64(state.Summary.HumanReviewCount) / total
+	state.Summary.AutoApprovalRate = float64(state.Summary.AutoApprovedCount) / total
+	return state
+}
+
+func analyticsStringField(event domain.AuditEvent, key string) string {
+	if event.Fields == nil {
+		return ""
+	}
+
+	value, ok := event.Fields[key]
+	if !ok {
+		return ""
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case domain.DecisionRoute:
+		return string(typed)
+	default:
+		return ""
+	}
+}
+
+func analyticsNumberField(event domain.AuditEvent, key string) float64 {
+	if event.Fields == nil {
+		return 0
+	}
+
+	value, ok := event.Fields[key]
+	if !ok {
+		return 0
+	}
+
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		number, err := typed.Float64()
+		if err == nil {
+			return number
+		}
+	}
+
+	return 0
+}
+
+func analyticsStateKey() string {
+	return "analytics:summary"
+}
+
+func (s *server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var state analyticsState
+	found, err := s.dapr.GetState(
+		r.Context(),
+		stateStore,
+		analyticsStateKey(),
+		&state,
+	)
+	if err != nil {
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"failed to load analytics summary",
+		)
+		return
+	}
+
+	if !found {
+		state = newAnalyticsState()
+	}
+
+	state = normalizeAnalyticsState(state)
+	state = refreshAnalyticsRates(state)
+
+	httpx.WriteJSON(w, http.StatusOK, state.Summary)
 }
