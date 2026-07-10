@@ -1,0 +1,1061 @@
+openapi: 3.1.0
+
+info:
+  title: ApprovalFlow API
+  version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Public HTTP API for the ApprovalFlow asynchronous invoice workflow.
+
+    The gateway accepts invoice submissions, exposes workflow status,
+    supports human approval actions and request-info resumption, and provides
+    audit, analytics, and durable terminal notifications.
+
+    Requests may include X-Correlation-Id. When omitted, the gateway generates
+    one and returns it in the response.
+
+    Demo authorization is implemented through X-Demo-Role for protected routes.
+
+servers:
+  - url: /
+    description: Same-origin ApprovalFlow gateway
+
+tags:
+  - name: System
+    description: Gateway health and system-level endpoints.
+  - name: Submissions
+    description: Invoice submission, status polling, and request-info resumption.
+  - name: Approvals
+    description: Human approval queue and approval actions.
+  - name: Audit
+    description: Correlated workflow audit trails.
+  - name: Analytics
+    description: Controller-facing operational and financial metrics.
+  - name: Notifications
+    description: Durable terminal workflow notifications and acknowledgement.
+
+security: []
+
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      summary: Gateway health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Gateway is healthy
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                service: gateway-service
+                status: ok
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /submissions:
+    post:
+      tags: [Submissions]
+      summary: Submit an invoice for asynchronous processing
+      operationId: createSubmission
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmissionRequest"
+            examples:
+              autoApprovalCandidate:
+                summary: Low-value invoice eligible for automatic approval
+                value:
+                  id: INV-1001
+                  submitter: guy@example.com
+                  department: Engineering
+                  vendor: Cafe Good
+                  vendorKnown: true
+                  invoiceNumber: MEAL-1001
+                  currency: USD
+                  category: meals
+                  attendees: 4
+                  lineItems:
+                    - description: Team lunch
+                      quantity: 1
+                      unitPrice: 42
+                  taxAmount: 0
+                  total: 42
+                  receiptPresent: true
+                  date: "2026-07-10"
+                  notes: Team lunch
+      responses:
+        "202":
+          description: Submission accepted for asynchronous processing
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/RateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/RateLimitRemaining"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionResponse"
+              example:
+                tracking_id: sub_1234567890abcdef
+                status: ACCEPTED
+                reason: Submission accepted for asynchronous processing.
+                duplicate: false
+        "200":
+          description: Duplicate detected; existing tracking ID returned
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionResponse"
+              example:
+                tracking_id: sub_1234567890abcdef
+                status: DUPLICATE
+                reason: Duplicate submission detected by vendor + invoiceNumber + total.
+                duplicate: true
+                duplicate_of: sub_1234567890abcdef
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /submissions/{tracking_id}:
+    get:
+      tags: [Submissions]
+      summary: Get current submission state
+      operationId: getSubmission
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current submission record
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionRecord"
+              examples:
+                paid:
+                  summary: Completed automatic approval workflow
+                  value:
+                    tracking_id: sub_1234567890abcdef
+                    original_invoice_id: INV-1001
+                    correlation_id: demo-correlation-1001
+                    revision_number: 1
+                    status: PAID
+                    reason: Payment completed successfully.
+                    duplicate: false
+                    request:
+                      vendor: Cafe Good
+                      vendorKnown: true
+                      invoiceNumber: MEAL-1001
+                      currency: USD
+                      category: meals
+                      lineItems:
+                        - description: Team lunch
+                          quantity: 1
+                          unitPrice: 42
+                      taxAmount: 0
+                      total: 42
+                      receiptPresent: true
+                      date: "2026-07-10"
+                      notes: Team lunch
+                    created_at_utc: "2026-07-10T10:00:00Z"
+                    updated_at_utc: "2026-07-10T10:00:02Z"
+                humanReview:
+                  summary: Submission awaiting human review
+                  value:
+                    tracking_id: sub_abcdef1234567890
+                    original_invoice_id: INV-1003
+                    correlation_id: demo-correlation-1003
+                    revision_number: 1
+                    status: HUMAN_REVIEW_REQUIRED
+                    reason: Invoice requires human review.
+                    duplicate: false
+                    request:
+                      vendor: Client Steakhouse
+                      vendorKnown: true
+                      invoiceNumber: MEAL-1003
+                      currency: USD
+                      category: meals
+                      attendees: 8
+                      lineItems:
+                        - description: Client dinner
+                          quantity: 1
+                          unitPrice: 1820
+                      taxAmount: 0
+                      total: 1820
+                      receiptPresent: true
+                      date: "2026-07-10"
+                      notes: Client dinner
+                    created_at_utc: "2026-07-10T10:00:00Z"
+                    updated_at_utc: "2026-07-10T10:00:01Z"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /submissions/{tracking_id}/additional-info:
+    post:
+      tags: [Submissions]
+      summary: Supply requested information and resume policy evaluation
+      description: |
+        Accepted only while the submission status is INFO_REQUESTED.
+
+        At least one supported field must be supplied. A successful request
+        increments revision_number, changes the state to PROCESSING, and
+        republishes the submission for policy evaluation.
+      operationId: submitAdditionalInformation
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdditionalInfoRequest"
+            example:
+              notes: Client names and business justification supplied.
+              receiptPresent: true
+              attendees: 8
+      responses:
+        "202":
+          description: Additional information accepted and processing resumed
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmissionRecord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Submission is not currently waiting for additional information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: additional information is accepted only while submission status is INFO_REQUESTED
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /approvals:
+    get:
+      tags: [Approvals]
+      summary: List approval queue items
+      operationId: listApprovals
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/ApproverRole"
+      responses:
+        "200":
+          description: Approval queue
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalListResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /approvals/{tracking_id}/approve:
+    post:
+      tags: [Approvals]
+      summary: Approve a pending item
+      operationId: approveSubmission
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/ApproverRole"
+      requestBody:
+        $ref: "#/components/requestBodies/ApprovalAction"
+      responses:
+        "200":
+          description: Approval item approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /approvals/{tracking_id}/reject:
+    post:
+      tags: [Approvals]
+      summary: Reject a pending item
+      operationId: rejectSubmission
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/ApproverRole"
+      requestBody:
+        $ref: "#/components/requestBodies/ApprovalAction"
+      responses:
+        "200":
+          description: Approval item rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /approvals/{tracking_id}/request-info:
+    post:
+      tags: [Approvals]
+      summary: Request additional information from the submitter
+      operationId: requestSubmissionInformation
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/ApproverRole"
+      requestBody:
+        $ref: "#/components/requestBodies/ApprovalAction"
+      responses:
+        "200":
+          description: Approval item changed to REQUEST_INFO
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalItem"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /audit/{correlation_id}:
+    get:
+      tags: [Audit]
+      summary: Get audit trail by correlation ID
+      operationId: getAuditTrail
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/AuditCorrelationId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/AuditorRole"
+      responses:
+        "200":
+          description: Ordered audit trail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditTrailResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /analytics/summary:
+    get:
+      tags: [Analytics]
+      summary: Get controller analytics summary
+      operationId: getAnalyticsSummary
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/ControllerRole"
+      responses:
+        "200":
+          description: Aggregate operational and financial metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsSummary"
+              example:
+                total_submissions: 8
+                completed_submissions: 4
+                auto_approved_count: 2
+                human_approved_count: 2
+                human_review_count: 4
+                rejected_count: 1
+                payment_failed_count: 1
+                auto_approved_amount_usd: 84
+                human_approved_amount_usd: 3640
+                human_review_rate: 0.5
+                auto_approval_rate: 0.25
+                updated_at_utc: "2026-07-10T10:10:00Z"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /notifications/{tracking_id}:
+    get:
+      tags: [Notifications]
+      summary: Get durable terminal workflow notification
+      operationId: getNotification
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/NotificationRole"
+      responses:
+        "200":
+          description: Terminal workflow notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+              example:
+                notification_id: notification_sub_1234567890abcdef
+                tracking_id: sub_1234567890abcdef
+                invoice_id: INV-1001
+                correlation_id: demo-correlation-1001
+                status: PAID
+                message: Invoice payment completed successfully.
+                acknowledged: false
+                created_at_utc: "2026-07-10T10:00:02Z"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+  /notifications/{tracking_id}/acknowledge:
+    post:
+      tags: [Notifications]
+      summary: Acknowledge a terminal notification
+      operationId: acknowledgeNotification
+      security:
+        - DemoRole: []
+      parameters:
+        - $ref: "#/components/parameters/TrackingId"
+        - $ref: "#/components/parameters/CorrelationId"
+        - $ref: "#/components/parameters/NotificationRole"
+      responses:
+        "200":
+          description: Notification acknowledged idempotently
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+              example:
+                notification_id: notification_sub_1234567890abcdef
+                tracking_id: sub_1234567890abcdef
+                invoice_id: INV-1001
+                correlation_id: demo-correlation-1001
+                status: PAID
+                message: Invoice payment completed successfully.
+                acknowledged: true
+                created_at_utc: "2026-07-10T10:00:02Z"
+                acknowledged_at_utc: "2026-07-10T10:05:00Z"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+components:
+  securitySchemes:
+    DemoRole:
+      type: apiKey
+      in: header
+      name: X-Demo-Role
+      description: |
+        Demonstration-only role header used by protected gateway routes.
+        Each operation documents its permitted role values separately.
+
+  parameters:
+    TrackingId:
+      name: tracking_id
+      in: path
+      required: true
+      description: Server-generated submission tracking ID
+      schema:
+        type: string
+        pattern: "^sub_[A-Za-z0-9]+$"
+      example: sub_1234567890abcdef
+
+    AuditCorrelationId:
+      name: correlation_id
+      in: path
+      required: true
+      description: Correlation ID used to group audit events
+      schema:
+        type: string
+      example: demo-correlation-1001
+
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: |
+        Caller-provided request correlation ID. The gateway generates one when
+        omitted and returns the effective value in the response.
+      schema:
+        type: string
+      example: demo-correlation-1001
+
+    ApproverRole:
+      name: X-Demo-Role
+      in: header
+      required: true
+      description: Demo authorization role. Allowed values are approver or admin.
+      schema:
+        type: string
+        enum: [approver, admin]
+
+    AuditorRole:
+      name: X-Demo-Role
+      in: header
+      required: true
+      description: Demo authorization role. Allowed values are auditor or admin.
+      schema:
+        type: string
+        enum: [auditor, admin]
+
+    ControllerRole:
+      name: X-Demo-Role
+      in: header
+      required: true
+      description: Demo authorization role. Allowed values are controller or admin.
+      schema:
+        type: string
+        enum: [controller, admin]
+
+    NotificationRole:
+      name: X-Demo-Role
+      in: header
+      required: true
+      description: |
+        Demo authorization role. Allowed values are submitter, controller, or admin.
+      schema:
+        type: string
+        enum: [submitter, controller, admin]
+
+  headers:
+    CorrelationId:
+      description: Effective correlation ID for the request
+      schema:
+        type: string
+
+    RateLimitLimit:
+      description: Maximum requests allowed in the current rate-limit window
+      schema:
+        type: integer
+        minimum: 1
+
+    RateLimitRemaining:
+      description: Requests remaining in the current rate-limit window
+      schema:
+        type: integer
+        minimum: 0
+
+  requestBodies:
+    ApprovalAction:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApprovalActionRequest"
+          example:
+            actor: finance.approver@example.com
+            reason: Reviewed invoice and supporting documentation.
+
+  responses:
+    BadRequest:
+      description: Invalid request payload or path
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: Missing or unauthorized demo role
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: forbidden
+
+    NotFound:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: resource not found
+
+    Conflict:
+      description: Requested action conflicts with current workflow state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: invalid submission status transition
+
+    TooManyRequests:
+      description: Gateway rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          $ref: "#/components/headers/RateLimitLimit"
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/RateLimitRemaining"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: rate limit exceeded
+
+    BadGateway:
+      description: Downstream service or Dapr invocation unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: downstream service unavailable
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    LineItem:
+      type: object
+      required:
+        - description
+        - quantity
+        - unitPrice
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+          exclusiveMinimum: 0
+        unitPrice:
+          type: number
+          minimum: 0
+
+    SubmissionRequest:
+      type: object
+      required:
+        - vendor
+        - vendorKnown
+        - invoiceNumber
+        - currency
+        - category
+        - lineItems
+        - taxAmount
+        - total
+        - receiptPresent
+      properties:
+        id:
+          type: string
+        submitter:
+          type: string
+        department:
+          type: string
+        vendor:
+          type: string
+          minLength: 1
+        vendorKnown:
+          type: boolean
+        invoiceNumber:
+          type: string
+          minLength: 1
+        currency:
+          type: string
+          minLength: 1
+          example: USD
+        category:
+          type: string
+          minLength: 1
+        attendees:
+          type: integer
+          minimum: 1
+        lineItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/LineItem"
+        taxAmount:
+          type: number
+          minimum: 0
+        total:
+          type: number
+          exclusiveMinimum: 0
+        receiptPresent:
+          type: boolean
+        date:
+          type: string
+          example: "2026-07-10"
+        notes:
+          type: string
+
+    SubmissionStatus:
+      type: string
+      enum:
+        - ACCEPTED
+        - DUPLICATE
+        - PROCESSING
+        - AUTO_APPROVED_PENDING_PAYMENT
+        - PAYMENT_PENDING
+        - PAID
+        - PAYMENT_FAILED
+        - HUMAN_REVIEW_REQUIRED
+        - APPROVED_BY_HUMAN
+        - REJECTED_BY_HUMAN
+        - INFO_REQUESTED
+        - REJECTED
+
+    SubmissionResponse:
+      type: object
+      required:
+        - tracking_id
+        - status
+        - reason
+        - duplicate
+      properties:
+        tracking_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/SubmissionStatus"
+        reason:
+          type: string
+        duplicate:
+          type: boolean
+        duplicate_of:
+          type: string
+
+    SubmissionRecord:
+      type: object
+      required:
+        - tracking_id
+        - revision_number
+        - status
+        - reason
+        - duplicate
+        - request
+        - created_at_utc
+        - updated_at_utc
+      properties:
+        tracking_id:
+          type: string
+        original_invoice_id:
+          type: string
+        correlation_id:
+          type: string
+        revision_number:
+          type: integer
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/SubmissionStatus"
+        reason:
+          type: string
+        duplicate:
+          type: boolean
+        duplicate_of:
+          type: string
+        request:
+          $ref: "#/components/schemas/SubmissionRequest"
+        created_at_utc:
+          type: string
+          format: date-time
+        updated_at_utc:
+          type: string
+          format: date-time
+
+    AdditionalInfoRequest:
+      type: object
+      minProperties: 1
+      properties:
+        notes:
+          type: string
+          minLength: 1
+        receiptPresent:
+          type: boolean
+        attendees:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+
+    ApprovalStatus:
+      type: string
+      enum:
+        - PENDING
+        - APPROVED
+        - REJECTED
+        - REQUEST_INFO
+
+    ApprovalActionRequest:
+      type: object
+      required:
+        - actor
+        - reason
+      properties:
+        actor:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+
+    ApprovalItem:
+      type: object
+      required:
+        - tracking_id
+        - amount_usd
+        - status
+        - reason
+        - violations
+        - correlation_id
+        - created_at_utc
+        - updated_at_utc
+      properties:
+        tracking_id:
+          type: string
+        invoice_id:
+          type: string
+        amount_usd:
+          type: number
+          minimum: 0
+        status:
+          $ref: "#/components/schemas/ApprovalStatus"
+        reason:
+          type: string
+        violations:
+          type: array
+          items:
+            type: string
+        agent_recommended:
+          type: string
+        agent_confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        agent_cited_rules:
+          type: array
+          items:
+            type: string
+        correlation_id:
+          type: string
+        created_at_utc:
+          type: string
+          format: date-time
+        updated_at_utc:
+          type: string
+          format: date-time
+        action_by:
+          type: string
+        action_reason:
+          type: string
+
+    ApprovalListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApprovalItem"
+
+    AuditEvent:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - correlation_id
+        - service
+        - action
+        - outcome
+        - occurred_at_utc
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+        correlation_id:
+          type: string
+        tracking_id:
+          type: string
+        invoice_id:
+          type: string
+        service:
+          type: string
+        action:
+          type: string
+        outcome:
+          type: string
+        reason:
+          type: string
+        fields:
+          type: object
+          additionalProperties: true
+        occurred_at_utc:
+          type: string
+          format: date-time
+
+    AuditTrailResponse:
+      type: object
+      required:
+        - correlation_id
+        - events
+      properties:
+        correlation_id:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+
+    AnalyticsSummary:
+      type: object
+      required:
+        - total_submissions
+        - completed_submissions
+        - auto_approved_count
+        - human_approved_count
+        - human_review_count
+        - rejected_count
+        - payment_failed_count
+        - auto_approved_amount_usd
+        - human_approved_amount_usd
+        - human_review_rate
+        - auto_approval_rate
+        - updated_at_utc
+      properties:
+        total_submissions:
+          type: integer
+          minimum: 0
+        completed_submissions:
+          type: integer
+          minimum: 0
+        auto_approved_count:
+          type: integer
+          minimum: 0
+        human_approved_count:
+          type: integer
+          minimum: 0
+        human_review_count:
+          type: integer
+          minimum: 0
+        rejected_count:
+          type: integer
+          minimum: 0
+        payment_failed_count:
+          type: integer
+          minimum: 0
+        auto_approved_amount_usd:
+          type: number
+          minimum: 0
+        human_approved_amount_usd:
+          type: number
+          minimum: 0
+        human_review_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        auto_approval_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        updated_at_utc:
+          type: string
+          format: date-time
+
+    Notification:
+      type: object
+      required:
+        - notification_id
+        - tracking_id
+        - correlation_id
+        - status
+        - message
+        - acknowledged
+        - created_at_utc
+      properties:
+        notification_id:
+          type: string
+        tracking_id:
+          type: string
+        invoice_id:
+          type: string
+        correlation_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/SubmissionStatus"
+        message:
+          type: string
+        acknowledged:
+          type: boolean
+        created_at_utc:
+          type: string
+          format: date-time
+        acknowledged_at_utc:
+          type:
+            - string
+            - "null"
+          format: date-time

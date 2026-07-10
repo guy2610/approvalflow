@@ -112,10 +112,55 @@ func (s *server) handleApprovalRequired(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if found {
+		if existing.Status == domain.ApprovalRequestInfo {
+			reopened := reopenApprovalItem(existing, event)
+
+			if err := s.dapr.SaveState(r.Context(), stateStore, key, reopened); err != nil {
+				httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reopen approval item")
+				return
+			}
+
+			s.log.Info("approval item reopened after additional information", logger.Fields{
+				"tracking_id":    reopened.TrackingID,
+				"invoice_id":     reopened.InvoiceID,
+				"amount_usd":     reopened.AmountUSD,
+				"violations":     reopened.Violations,
+				"correlation_id": reopened.CorrelationID,
+			})
+
+			if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+				EventID:       "audit_" + reopened.TrackingID + "_approval_item_reopened",
+				CorrelationID: reopened.CorrelationID,
+				TrackingID:    reopened.TrackingID,
+				InvoiceID:     reopened.InvoiceID,
+				Service:       serviceName,
+				Action:        "approval_item_reopened",
+				Outcome:       string(reopened.Status),
+				Reason:        reopened.Reason,
+				Fields: map[string]any{
+					"amount_usd":        reopened.AmountUSD,
+					"violations":        reopened.Violations,
+					"agent_recommended": reopened.AgentRecommended,
+					"agent_confidence":  reopened.AgentConfidence,
+					"agent_cited_rules": reopened.AgentCitedRules,
+				},
+			}); err != nil {
+				s.log.Error("failed to publish approval reopen audit event", logger.Fields{
+					"error":          err.Error(),
+					"tracking_id":    reopened.TrackingID,
+					"correlation_id": reopened.CorrelationID,
+				})
+			}
+
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		s.log.Info("duplicate approval required event ignored", logger.Fields{
-			"tracking_id":    event.TrackingID,
-			"invoice_id":     event.InvoiceID,
-			"correlation_id": event.CorrelationID,
+			"tracking_id":     event.TrackingID,
+			"invoice_id":      event.InvoiceID,
+			"approval_status": existing.Status,
+			"correlation_id":  event.CorrelationID,
 		})
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -580,4 +625,24 @@ func (s *server) loadApprovalIndex(r *http.Request) ([]string, error) {
 
 func approvalKey(trackingID string) string {
 	return "approval:" + trackingID
+}
+
+func reopenApprovalItem(
+	existing domain.ApprovalItem,
+	event domain.ApprovalRequiredEvent,
+) domain.ApprovalItem {
+	existing.InvoiceID = event.InvoiceID
+	existing.AmountUSD = event.AmountUSD
+	existing.Status = domain.ApprovalPending
+	existing.Reason = event.Reason
+	existing.Violations = event.Violations
+	existing.AgentRecommended = event.AgentRecommended
+	existing.AgentConfidence = event.AgentConfidence
+	existing.AgentCitedRules = event.AgentCitedRules
+	existing.CorrelationID = event.CorrelationID
+	existing.ActionBy = ""
+	existing.ActionReason = ""
+	existing.UpdatedAtUTC = time.Now().UTC()
+
+	return existing
 }

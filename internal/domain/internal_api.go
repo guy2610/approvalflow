@@ -17,3 +17,9 @@ type ApplyApprovalRequest struct {
 	Reason string           `json:"reason"`
 	Actor  string           `json:"actor"`
 }
+
+type AdditionalInfoRequest struct {
+	Notes          *string `json:"notes,omitempty"`
+	ReceiptPresent *bool   `json:"receiptPresent,omitempty"`
+	Attendees      *int    `json:"attendees,omitempty"`
+}

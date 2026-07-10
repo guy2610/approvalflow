@@ -95,6 +95,10 @@ run_gateway_smoke_tests() {
   assert_http_code "GET" "/approvals" "200" "approvals-with-approver" -H "X-Demo-Role: approver"
   assert_http_code "GET" "/audit/smoke-authz" "403" "audit-without-role"
   assert_http_code "GET" "/audit/smoke-authz" "200" "audit-with-auditor" -H "X-Demo-Role: auditor"
+  assert_http_code "GET" "/analytics/summary" "403" "analytics-without-role"
+  assert_http_code "GET" "/analytics/summary" "200" "analytics-with-controller" -H "X-Demo-Role: controller"
+  assert_http_code "GET" "/notifications/nonexistent" "403" "notifications-without-role"
+  assert_http_code "GET" "/notifications/nonexistent" "404" "notifications-with-submitter" -H "X-Demo-Role: submitter"
 }
 
 wait_for_gateway() {
@@ -208,6 +212,142 @@ wait_for_approval_pending() {
   fail "$label approval item did not become pending"
 }
 
+
+wait_for_approval_status() {
+  local tracking_id="$1"
+  local expected="$2"
+  local label="$3"
+
+  for _ in $(seq 1 60); do
+    if curl -sS \
+      -H "X-Correlation-Id: verify-approval-status-$tracking_id" \
+      -H "X-Demo-Role: approver" \
+      "$BASE_URL/approvals" |
+      jq -e --arg id "$tracking_id" --arg expected "$expected" '
+        .items[]?
+        | select(
+            .tracking_id == $id
+            and .status == $expected
+          )
+      ' >/dev/null; then
+      pass "$label approval item -> $expected"
+      return
+    fi
+
+    sleep 1
+  done
+
+  curl -sS \
+    -H "X-Correlation-Id: verify-approval-status-final" \
+    -H "X-Demo-Role: approver" \
+    "$BASE_URL/approvals" >&2 || true
+  printf "\n" >&2
+  fail "$label approval item did not reach $expected"
+}
+
+request_info_submission() {
+  local tracking_id="$1"
+  local correlation_id="$2"
+  local body="$TMP_DIR/request-info-$tracking_id.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -H "Content-Type: application/json" \
+      -H "X-Correlation-Id: $correlation_id" \
+      -H "X-Demo-Role: approver" \
+      --data '{
+        "actor":"verification@approvalflow.local",
+        "reason":"Please provide the client name and business justification."
+      }' \
+      "$BASE_URL/approvals/$tracking_id/request-info"
+  )"
+
+  if [ "$code" != "200" ]; then
+    printf "Request-info response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "request-info $tracking_id expected HTTP 200 but got HTTP $code"
+  fi
+
+  pass "$tracking_id request-info action accepted"
+}
+
+submit_additional_info() {
+  local tracking_id="$1"
+  local correlation_id="$2"
+  local body="$TMP_DIR/additional-info-$tracking_id.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -H "Content-Type: application/json" \
+      -H "X-Correlation-Id: $correlation_id" \
+      --data '{
+        "notes":"Client: Contoso. Weekend client dinner for renewal negotiations; business justification supplied.",
+        "receiptPresent":true,
+        "attendees":11
+      }' \
+      "$BASE_URL/submissions/$tracking_id/additional-info"
+  )"
+
+  if [ "$code" != "202" ]; then
+    printf "Additional-info response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "additional-info $tracking_id expected HTTP 202 but got HTTP $code"
+  fi
+
+  local revision
+  local status
+
+  revision="$(jq -r '.revision_number // 0' "$body")"
+  status="$(jq -r '.status // empty' "$body")"
+
+  if [ "$revision" != "2" ]; then
+    printf "Additional-info response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$tracking_id expected revision_number 2 but got $revision"
+  fi
+
+  if [ "$status" != "PROCESSING" ]; then
+    printf "Additional-info response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$tracking_id expected PROCESSING after additional info but got $status"
+  fi
+
+  pass "$tracking_id additional info accepted at revision 2"
+}
+
+assert_submission_revision() {
+  local tracking_id="$1"
+  local expected_revision="$2"
+  local label="$3"
+  local body="$TMP_DIR/revision-$tracking_id.json"
+
+  curl -sS \
+    -H "X-Correlation-Id: verify-revision-$tracking_id" \
+    "$BASE_URL/submissions/$tracking_id" > "$body"
+
+  local revision
+  revision="$(jq -r '.revision_number // 0' "$body")"
+
+  if [ "$revision" != "$expected_revision" ]; then
+    printf "Submission body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label expected revision $expected_revision but got $revision"
+  fi
+
+  pass "$label revision_number -> $expected_revision"
+}
+
 approve_submission() {
   local tracking_id="$1"
   local correlation_id="$2"
@@ -287,6 +427,148 @@ assert_no_audit_action() {
   fi
 
   pass "$correlation_id does not contain $action"
+}
+
+wait_for_notification() {
+  local tracking_id="$1"
+  local expected_status="$2"
+  local label="$3"
+  local body="$TMP_DIR/notification-$tracking_id.json"
+
+  for _ in $(seq 1 60); do
+    local code
+
+    code="$(
+      curl -sS \
+        -o "$body" \
+        -w "%{http_code}" \
+        -H "X-Correlation-Id: verify-notification-$tracking_id" \
+        -H "X-Demo-Role: submitter" \
+        "$BASE_URL/notifications/$tracking_id" || true
+    )"
+
+    if [ "$code" = "200" ]; then
+      local status
+      local acknowledged
+
+      status="$(jq -r '.status // empty' "$body")"
+      acknowledged="$(jq -r '.acknowledged // false' "$body")"
+
+      if [ "$status" = "$expected_status" ] && [ "$acknowledged" = "false" ]; then
+        pass "$label notification -> $expected_status and unacknowledged"
+        return
+      fi
+    fi
+
+    sleep 1
+  done
+
+  printf "Notification body for %s:\n" "$tracking_id" >&2
+  cat "$body" >&2 || true
+  printf "\n" >&2
+  fail "$label notification did not reach $expected_status"
+}
+
+acknowledge_notification() {
+  local tracking_id="$1"
+  local label="$2"
+  local body="$TMP_DIR/notification-ack-$tracking_id.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -X POST \
+      -H "X-Correlation-Id: verify-notification-ack-$tracking_id" \
+      -H "X-Demo-Role: submitter" \
+      "$BASE_URL/notifications/$tracking_id/acknowledge" || true
+  )"
+
+  if [ "$code" != "200" ]; then
+    printf "Acknowledge response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label acknowledge expected HTTP 200 but got HTTP $code"
+  fi
+
+  if ! jq -e '
+    .acknowledged == true
+    and (.acknowledged_at_utc != null)
+  ' "$body" >/dev/null; then
+    printf "Acknowledge response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label notification was not acknowledged"
+  fi
+
+  pass "$label notification acknowledged"
+}
+
+assert_notification_acknowledged() {
+  local tracking_id="$1"
+  local label="$2"
+  local body="$TMP_DIR/notification-ack-read-$tracking_id.json"
+
+  curl -sS \
+    -H "X-Correlation-Id: verify-notification-ack-read-$tracking_id" \
+    -H "X-Demo-Role: submitter" \
+    "$BASE_URL/notifications/$tracking_id" > "$body"
+
+  if ! jq -e '
+    .acknowledged == true
+    and (.acknowledged_at_utc != null)
+  ' "$body" >/dev/null; then
+    printf "Notification body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label acknowledgement was not persisted"
+  fi
+
+  pass "$label acknowledgement persisted"
+}
+
+assert_analytics_summary() {
+  local body="$TMP_DIR/analytics-summary.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -H "X-Correlation-Id: verify-analytics-summary" \
+      -H "X-Demo-Role: controller" \
+      "$BASE_URL/analytics/summary" || true
+  )"
+
+  if [ "$code" != "200" ]; then
+    printf "Analytics response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "analytics summary expected HTTP 200 but got HTTP $code"
+  fi
+
+  if ! jq -e '
+    .total_submissions >= 8
+    and .completed_submissions >= 4
+    and .auto_approved_count >= 2
+    and .human_review_count >= 4
+    and .human_approved_count >= 2
+    and .payment_failed_count >= 1
+    and .auto_approved_amount_usd > 0
+    and .human_approved_amount_usd > 0
+    and .human_review_rate >= 0
+    and .human_review_rate <= 1
+    and .auto_approval_rate >= 0
+    and .auto_approval_rate <= 1
+  ' "$body" >/dev/null; then
+    printf "Analytics response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "analytics summary did not contain the expected workflow metrics"
+  fi
+
+  pass "analytics summary contains throughput, route, money, and failure metrics"
 }
 
 lower_runtime_policy_ceiling() {
@@ -388,6 +670,10 @@ TRACK_1001="$(printf "%s" "$RESP_1001" | jq -r '.tracking_id')"
 [ "$TRACK_1001" != "null" ] && [ -n "$TRACK_1001" ] || fail "INV-1001 missing tracking_id"
 
 wait_for_submission_status "$TRACK_1001" "PAID" "INV-1001"
+wait_for_notification "$TRACK_1001" "PAID" "INV-1001"
+acknowledge_notification "$TRACK_1001" "INV-1001"
+assert_notification_acknowledged "$TRACK_1001" "INV-1001"
+
 wait_for_audit_actions "$CORR_1001" \
   "submission_accepted" \
   "decision_produced" \
@@ -408,21 +694,37 @@ wait_for_audit_actions "$CORR_1002" \
   "payment_requested_published" \
   "payment_succeeded"
 
-log "Scenario: INV-1003 human review -> approve -> PAID"
+log "Scenario: INV-1003 request info -> resume -> approve -> PAID"
 CORR_1003="$RUN_ID-1003"
 RESP_1003="$(submit_invoice "INV-1003" "$CORR_1003" "202")"
 TRACK_1003="$(printf "%s" "$RESP_1003" | jq -r '.tracking_id')"
 
 [ "$TRACK_1003" != "null" ] && [ -n "$TRACK_1003" ] || fail "INV-1003 missing tracking_id"
 
-wait_for_approval_pending "$TRACK_1003" "INV-1003"
+wait_for_submission_status "$TRACK_1003" "HUMAN_REVIEW_REQUIRED" "INV-1003 initial review"
+wait_for_approval_pending "$TRACK_1003" "INV-1003 initial review"
+
+request_info_submission "$TRACK_1003" "$RUN_ID-request-info-1003"
+wait_for_submission_status "$TRACK_1003" "INFO_REQUESTED" "INV-1003 request info"
+wait_for_approval_status "$TRACK_1003" "REQUEST_INFO" "INV-1003 request info"
+
+submit_additional_info "$TRACK_1003" "$RUN_ID-additional-info-1003"
+assert_submission_revision "$TRACK_1003" "2" "INV-1003 resumed submission"
+
+wait_for_submission_status "$TRACK_1003" "HUMAN_REVIEW_REQUIRED" "INV-1003 re-evaluation"
+wait_for_approval_pending "$TRACK_1003" "INV-1003 reopened review"
+
 approve_submission "$TRACK_1003" "$RUN_ID-approve-1003"
 wait_for_submission_status "$TRACK_1003" "PAID" "INV-1003"
+
 wait_for_audit_actions "$CORR_1003" \
   "submission_accepted" \
   "approval_required_published" \
   "decision_produced" \
   "approval_item_queued" \
+  "info_requested" \
+  "additional_info_submitted" \
+  "approval_item_reopened" \
   "human_approved" \
   "payment_succeeded"
 
@@ -452,6 +754,8 @@ TRACK_1012="$(printf "%s" "$RESP_1012" | jq -r '.tracking_id')"
 wait_for_approval_pending "$TRACK_1012" "INV-1012"
 approve_submission "$TRACK_1012" "$RUN_ID-approve-1012"
 wait_for_submission_status "$TRACK_1012" "PAYMENT_FAILED" "INV-1012"
+wait_for_notification "$TRACK_1012" "PAYMENT_FAILED" "INV-1012"
+
 wait_for_audit_actions "$CORR_1012" \
   "submission_accepted" \
   "approval_required_published" \
@@ -520,6 +824,9 @@ wait_for_audit_actions "$CORR_1022" \
   "decision_produced" \
   "approval_required_published" \
   "approval_item_queued"
+
+log "Controller analytics summary"
+assert_analytics_summary
 
 log "Verification summary"
 printf "PASS count: %d\n" "$PASSED"

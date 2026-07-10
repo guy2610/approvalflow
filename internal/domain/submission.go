@@ -46,6 +46,8 @@ const (
 type SubmissionRecord struct {
 	TrackingID        string            `json:"tracking_id"`
 	OriginalInvoiceID string            `json:"original_invoice_id,omitempty"`
+	CorrelationID     string            `json:"correlation_id,omitempty"`
+	RevisionNumber    int               `json:"revision_number"`
 	Status            SubmissionStatus  `json:"status"`
 	Reason            string            `json:"reason"`
 	Duplicate         bool              `json:"duplicate"`

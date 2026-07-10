@@ -532,7 +532,7 @@ func statusFromDecision(route domain.DecisionRoute) domain.SubmissionStatus {
 	case domain.RouteReject:
 		return domain.SubmissionRejected
 	default:
-		return domain.SubmissionProcessing
+		return domain.SubmissionHumanReviewRequired
 	}
 }
 

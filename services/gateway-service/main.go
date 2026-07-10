@@ -38,6 +38,8 @@ func main() {
 	mux.HandleFunc("/approvals", requireDemoRole(srv.handleApprovals, "approver", "admin"))
 	mux.HandleFunc("/approvals/", requireDemoRole(srv.handleApprovalAction, "approver", "admin"))
 	mux.HandleFunc("/audit/", requireDemoRole(srv.handleAuditTrail, "auditor", "admin"))
+	mux.HandleFunc("/analytics/summary", requireDemoRole(srv.handleAnalyticsSummary, "controller", "admin"))
+	mux.HandleFunc("/notifications/", requireDemoRole(srv.handleNotifications, "submitter", "controller", "admin"))
 
 	rateLimitPerMinute := parsePositiveInt(config.GetEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120"), 120)
 	rateLimiter := httpx.NewRateLimiter(rateLimitPerMinute, time.Minute)
@@ -82,28 +84,65 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/submissions/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing submission path")
+		return
+	}
+
+	if strings.HasSuffix(path, "/additional-info") {
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		defer r.Body.Close()
+
+		status, raw, err := s.dapr.InvokeRawPassthrough(
+			r.Context(),
+			"submission-service",
+			"submissions/"+path,
+			http.MethodPost,
+			body,
+		)
+		if err != nil {
+			s.log.Error("submission service unavailable", logger.Fields{
+				"error":          err.Error(),
+				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+			})
+			httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
+			return
+		}
+
+		writeRawJSON(w, status, raw)
+		return
+	}
+
 	if r.Method != http.MethodGet {
 		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	trackingID := strings.TrimPrefix(r.URL.Path, "/submissions/")
-	if trackingID == "" {
-		httpx.WriteError(w, r, http.StatusBadRequest, "missing tracking id")
-		return
-	}
-
-	status, raw, err := s.dapr.InvokeRaw(r.Context(), "submission-service", "submissions/"+trackingID, http.MethodGet, nil)
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"submission-service",
+		"submissions/"+path,
+		http.MethodGet,
+		nil,
+	)
 	if err != nil {
-		s.log.Error("submission status invocation failed", logger.Fields{
+		s.log.Error("submission service unavailable", logger.Fields{
 			"error":          err.Error(),
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
-
-		if status == 0 {
-			httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
-			return
-		}
+		httpx.WriteError(w, r, http.StatusBadGateway, "submission service unavailable")
+		return
 	}
 
 	writeRawJSON(w, status, raw)
@@ -180,6 +219,89 @@ func (s *server) handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
 		httpx.WriteError(w, r, http.StatusBadGateway, "audit service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/notifications/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing notification path")
+		return
+	}
+
+	if strings.HasSuffix(path, "/acknowledge") {
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		status, raw, err := s.dapr.InvokeRawPassthrough(
+			r.Context(),
+			"audit-service",
+			"notifications/"+path,
+			http.MethodPost,
+			nil,
+		)
+		if err != nil {
+			s.log.Error("notification service unavailable", logger.Fields{
+				"error":          err.Error(),
+				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+			})
+			httpx.WriteError(w, r, http.StatusBadGateway, "notification service unavailable")
+			return
+		}
+
+		writeRawJSON(w, status, raw)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"audit-service",
+		"notifications/"+path,
+		http.MethodGet,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("notification service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "notification service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleAnalyticsSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"audit-service",
+		"analytics/summary",
+		http.MethodGet,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("analytics service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "analytics service unavailable")
 		return
 	}
 
