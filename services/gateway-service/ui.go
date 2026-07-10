@@ -128,6 +128,25 @@ const indexHTML = `<!doctype html>
       font-size: 13px;
     }
 
+    .dashboard-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin: 22px 0 10px;
+      flex-wrap: wrap;
+    }
+
+    .dashboard-header h2 {
+      margin: 0;
+    }
+
+    .dashboard-header p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
     .status-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -460,6 +479,53 @@ const indexHTML = `<!doctype html>
         <span>Last HTTP status</span>
       </div>
     </section>
+
+    <section class="dashboard-header">
+      <div>
+        <h2>Controller analytics</h2>
+        <p>Live operational and financial metrics derived from the audit event stream.</p>
+      </div>
+      <button class="ghost" onclick="refreshAnalytics()">Refresh analytics</button>
+    </section>
+
+    <section class="status-grid">
+      <div class="status-card">
+        <strong id="metricTotalSubmissions">0</strong>
+        <span>Total submissions</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricCompleted">0</strong>
+        <span>Completed workflows</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricAutoApproved">0</strong>
+        <span>Auto-approved</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricHumanReview">0</strong>
+        <span>Human review</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricAutoAmount">$0.00</strong>
+        <span>Auto-approved money</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricHumanAmount">$0.00</strong>
+        <span>Human-approved money</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricRejected">0</strong>
+        <span>Rejected</span>
+      </div>
+      <div class="status-card">
+        <strong id="metricPaymentFailed">0</strong>
+        <span>Payment failures</span>
+      </div>
+    </section>
+
+    <p class="hint" id="analyticsRates">
+      Auto-approval rate: 0.0% · Human-review rate: 0.0%
+    </p>
 
     <section class="main-grid">
       <div class="section-stack">
@@ -835,7 +901,66 @@ async function getAudit() {
   }
 }
 
+function formatUSD(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD"
+  }).format(amount);
+}
+
+function formatPercent(value) {
+  return (Number(value || 0) * 100).toFixed(1) + "%";
+}
+
+function renderAnalytics(summary) {
+  document.getElementById("metricTotalSubmissions").textContent =
+    summary.total_submissions || 0;
+  document.getElementById("metricCompleted").textContent =
+    summary.completed_submissions || 0;
+  document.getElementById("metricAutoApproved").textContent =
+    summary.auto_approved_count || 0;
+  document.getElementById("metricHumanReview").textContent =
+    summary.human_review_count || 0;
+  document.getElementById("metricAutoAmount").textContent =
+    formatUSD(summary.auto_approved_amount_usd);
+  document.getElementById("metricHumanAmount").textContent =
+    formatUSD(summary.human_approved_amount_usd);
+  document.getElementById("metricRejected").textContent =
+    summary.rejected_count || 0;
+  document.getElementById("metricPaymentFailed").textContent =
+    summary.payment_failed_count || 0;
+
+  document.getElementById("analyticsRates").textContent =
+    "Auto-approval rate: " +
+    formatPercent(summary.auto_approval_rate) +
+    " · Human-review rate: " +
+    formatPercent(summary.human_review_rate);
+}
+
+async function refreshAnalytics() {
+  try {
+    const response = await fetch("/analytics/summary", {
+      method: "GET",
+      headers: headers("ui-controller-analytics", "controller")
+    });
+
+    const result = await parseResponse(response);
+
+    if (!response.ok) {
+      output(result, "Analytics failed");
+      return;
+    }
+
+    renderAnalytics(result.payload || {});
+    output(result, "Analytics refreshed");
+  } catch (err) {
+    output("Analytics refresh failed: " + err.message, "Request failed");
+  }
+}
+
 loadFixture("INV-1001");
+refreshAnalytics();
 </script>
 </body>
 </html>`
