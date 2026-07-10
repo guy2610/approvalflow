@@ -298,61 +298,118 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) approve(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "approve")
+func (s *server) approve(
+	w http.ResponseWriter,
+	r *http.Request,
+	trackingID string,
+	req domain.ApprovalActionRequest,
+) {
+	item, record, shouldSaveDecision, ok :=
+		s.loadApprovalForActionOrWriteError(
+			w,
+			r,
+			trackingID,
+			"approve",
+		)
 	if !ok {
 		return
 	}
 
-	item.Status = domain.ApprovalApproved
-	item.ActionBy = req.Actor
-	item.ActionReason = req.Reason
-	item.UpdatedAtUTC = time.Now().UTC()
+	if shouldSaveDecision {
+		item.Status = domain.ApprovalApproved
+		item.ActionBy = req.Actor
+		item.ActionReason = req.Reason
+		item.UpdatedAtUTC = time.Now().UTC()
 
-	if err := s.dapr.SaveState(r.Context(), stateStore, approvalKey(trackingID), item); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save approval")
-		return
+		if err := s.dapr.SaveState(
+			r.Context(),
+			stateStore,
+			approvalKey(trackingID),
+			item,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to save approval",
+			)
+			return
+		}
 	}
 
-	if err := s.applySubmissionApproval(r, trackingID, domain.SubmissionApprovedByHuman, "Human approver approved the submission.", req.Actor); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission approval")
-		return
+	if shouldApplySubmissionApproval("approve", record.Status) {
+		if err := s.applySubmissionApproval(
+			r,
+			trackingID,
+			domain.SubmissionApprovedByHuman,
+			"Human approver approved the submission.",
+			item.ActionBy,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to update submission approval",
+			)
+			return
+		}
+
+		record.Status = domain.SubmissionApprovedByHuman
 	}
 
-	paymentEvent := domain.PaymentRequestedEvent{
-		EventID:       "evt_approval_payment_" + trackingID,
-		EventType:     domain.TopicPaymentRequested,
-		CorrelationID: item.CorrelationID,
-		TrackingID:    trackingID,
-		InvoiceID:     item.InvoiceID,
-		AmountUSD:     item.AmountUSD,
-		OccurredAtUTC: time.Now().UTC(),
+	if shouldPublishApprovalPayment(record.Status) {
+		paymentEvent := domain.PaymentRequestedEvent{
+			EventID: approvalEffectEventID(
+				item,
+				"evt_approval_payment",
+			),
+			EventType:     domain.TopicPaymentRequested,
+			CorrelationID: item.CorrelationID,
+			TrackingID:    trackingID,
+			InvoiceID:     item.InvoiceID,
+			AmountUSD:     item.AmountUSD,
+			OccurredAtUTC: item.UpdatedAtUTC,
+		}
+
+		if err := s.dapr.PublishEvent(
+			r.Context(),
+			domain.PubSubName,
+			domain.TopicPaymentRequested,
+			paymentEvent,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to publish payment request",
+			)
+			return
+		}
 	}
 
-	if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicPaymentRequested, paymentEvent); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to publish payment request")
-		return
-	}
-
-	s.log.Info("approval accepted and payment requested", logger.Fields{
-		"tracking_id":    trackingID,
-		"invoice_id":     item.InvoiceID,
-		"amount_usd":     item.AmountUSD,
-		"actor":          req.Actor,
-		"correlation_id": item.CorrelationID,
+	s.log.Info("approval accepted and downstream effects reconciled", logger.Fields{
+		"tracking_id":       trackingID,
+		"invoice_id":        item.InvoiceID,
+		"amount_usd":        item.AmountUSD,
+		"actor":             item.ActionBy,
+		"submission_status": record.Status,
+		"correlation_id":    item.CorrelationID,
 	})
 
 	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-		EventID:       "audit_" + trackingID + "_human_approved",
+		EventID: approvalEffectEventID(
+			item,
+			"audit_human_approved",
+		),
 		CorrelationID: item.CorrelationID,
 		TrackingID:    trackingID,
 		InvoiceID:     item.InvoiceID,
 		Service:       serviceName,
 		Action:        "human_approved",
 		Outcome:       string(item.Status),
-		Reason:        req.Reason,
+		Reason:        item.ActionReason,
 		Fields: map[string]any{
-			"actor":      req.Actor,
+			"actor":      item.ActionBy,
 			"amount_usd": item.AmountUSD,
 		},
 	}); err != nil {
@@ -366,50 +423,89 @@ func (s *server) approve(w http.ResponseWriter, r *http.Request, trackingID stri
 	httpx.WriteJSON(w, http.StatusOK, item)
 }
 
-func (s *server) reject(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "reject")
+func (s *server) reject(
+	w http.ResponseWriter,
+	r *http.Request,
+	trackingID string,
+	req domain.ApprovalActionRequest,
+) {
+	item, record, shouldSaveDecision, ok :=
+		s.loadApprovalForActionOrWriteError(
+			w,
+			r,
+			trackingID,
+			"reject",
+		)
 	if !ok {
 		return
 	}
 
-	item.Status = domain.ApprovalRejected
-	item.ActionBy = req.Actor
-	item.ActionReason = req.Reason
-	item.UpdatedAtUTC = time.Now().UTC()
+	if shouldSaveDecision {
+		item.Status = domain.ApprovalRejected
+		item.ActionBy = req.Actor
+		item.ActionReason = req.Reason
+		item.UpdatedAtUTC = time.Now().UTC()
 
-	if err := s.dapr.SaveState(r.Context(), stateStore, approvalKey(trackingID), item); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save rejection")
-		return
+		if err := s.dapr.SaveState(
+			r.Context(),
+			stateStore,
+			approvalKey(trackingID),
+			item,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to save rejection",
+			)
+			return
+		}
 	}
 
 	reason := "Human approver rejected the submission."
-	if req.Reason != "" {
-		reason = reason + " Reason: " + req.Reason
+	if item.ActionReason != "" {
+		reason += " Reason: " + item.ActionReason
 	}
 
-	if err := s.applySubmissionApproval(r, trackingID, domain.SubmissionRejectedByHuman, reason, req.Actor); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission rejection")
-		return
+	if shouldApplySubmissionApproval("reject", record.Status) {
+		if err := s.applySubmissionApproval(
+			r,
+			trackingID,
+			domain.SubmissionRejectedByHuman,
+			reason,
+			item.ActionBy,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to update submission rejection",
+			)
+			return
+		}
 	}
 
-	s.log.Info("approval rejected", logger.Fields{
+	s.log.Info("approval rejection downstream effects reconciled", logger.Fields{
 		"tracking_id":    trackingID,
 		"invoice_id":     item.InvoiceID,
-		"actor":          req.Actor,
+		"actor":          item.ActionBy,
 		"correlation_id": item.CorrelationID,
 	})
 
 	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-		EventID:       "audit_" + trackingID + "_human_rejected",
+		EventID: approvalEffectEventID(
+			item,
+			"audit_human_rejected",
+		),
 		CorrelationID: item.CorrelationID,
 		TrackingID:    trackingID,
 		InvoiceID:     item.InvoiceID,
 		Service:       serviceName,
 		Action:        "human_rejected",
 		Outcome:       string(item.Status),
-		Reason:        req.Reason,
+		Reason:        item.ActionReason,
 		Fields: map[string]any{
-			"actor": req.Actor,
+			"actor": item.ActionBy,
 		},
 	}); err != nil {
 		s.log.Error("failed to publish audit event", logger.Fields{
@@ -422,50 +518,89 @@ func (s *server) reject(w http.ResponseWriter, r *http.Request, trackingID strin
 	httpx.WriteJSON(w, http.StatusOK, item)
 }
 
-func (s *server) requestInfo(w http.ResponseWriter, r *http.Request, trackingID string, req domain.ApprovalActionRequest) {
-	item, ok := s.loadPendingApprovalWithSubmissionGuardOrWriteError(w, r, trackingID, "request-info")
+func (s *server) requestInfo(
+	w http.ResponseWriter,
+	r *http.Request,
+	trackingID string,
+	req domain.ApprovalActionRequest,
+) {
+	item, record, shouldSaveDecision, ok :=
+		s.loadApprovalForActionOrWriteError(
+			w,
+			r,
+			trackingID,
+			"request-info",
+		)
 	if !ok {
 		return
 	}
 
-	item.Status = domain.ApprovalRequestInfo
-	item.ActionBy = req.Actor
-	item.ActionReason = req.Reason
-	item.UpdatedAtUTC = time.Now().UTC()
+	if shouldSaveDecision {
+		item.Status = domain.ApprovalRequestInfo
+		item.ActionBy = req.Actor
+		item.ActionReason = req.Reason
+		item.UpdatedAtUTC = time.Now().UTC()
 
-	if err := s.dapr.SaveState(r.Context(), stateStore, approvalKey(trackingID), item); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save request-info")
-		return
+		if err := s.dapr.SaveState(
+			r.Context(),
+			stateStore,
+			approvalKey(trackingID),
+			item,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to save request-info",
+			)
+			return
+		}
 	}
 
 	reason := "Human approver requested more information."
-	if req.Reason != "" {
-		reason = reason + " Reason: " + req.Reason
+	if item.ActionReason != "" {
+		reason += " Reason: " + item.ActionReason
 	}
 
-	if err := s.applySubmissionApproval(r, trackingID, domain.SubmissionInfoRequested, reason, req.Actor); err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to update submission request-info")
-		return
+	if shouldApplySubmissionApproval("request-info", record.Status) {
+		if err := s.applySubmissionApproval(
+			r,
+			trackingID,
+			domain.SubmissionInfoRequested,
+			reason,
+			item.ActionBy,
+		); err != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to update submission request-info",
+			)
+			return
+		}
 	}
 
-	s.log.Info("approval requested more info", logger.Fields{
+	s.log.Info("request-info downstream effects reconciled", logger.Fields{
 		"tracking_id":    trackingID,
 		"invoice_id":     item.InvoiceID,
-		"actor":          req.Actor,
+		"actor":          item.ActionBy,
 		"correlation_id": item.CorrelationID,
 	})
 
 	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-		EventID:       "audit_" + trackingID + "_info_requested",
+		EventID: approvalEffectEventID(
+			item,
+			"audit_info_requested",
+		),
 		CorrelationID: item.CorrelationID,
 		TrackingID:    trackingID,
 		InvoiceID:     item.InvoiceID,
 		Service:       serviceName,
 		Action:        "info_requested",
 		Outcome:       string(item.Status),
-		Reason:        req.Reason,
+		Reason:        item.ActionReason,
 		Fields: map[string]any{
-			"actor": req.Actor,
+			"actor": item.ActionBy,
 		},
 	}); err != nil {
 		s.log.Error("failed to publish audit event", logger.Fields{
@@ -476,92 +611,6 @@ func (s *server) requestInfo(w http.ResponseWriter, r *http.Request, trackingID 
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, item)
-}
-
-func (s *server) loadPendingApprovalOrWriteError(w http.ResponseWriter, r *http.Request, trackingID string) (domain.ApprovalItem, bool) {
-	var item domain.ApprovalItem
-	found, err := s.dapr.GetState(r.Context(), stateStore, approvalKey(trackingID), &item)
-	if err != nil {
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load approval")
-		return domain.ApprovalItem{}, false
-	}
-
-	if !found {
-		httpx.WriteError(w, r, http.StatusNotFound, "approval not found")
-		return domain.ApprovalItem{}, false
-	}
-
-	if item.Status != domain.ApprovalPending {
-		s.log.Info("approval action rejected because item is no longer pending", logger.Fields{
-			"tracking_id":    trackingID,
-			"current_status": item.Status,
-			"invoice_id":     item.InvoiceID,
-			"correlation_id": item.CorrelationID,
-		})
-		httpx.WriteError(w, r, http.StatusConflict, "approval is no longer pending")
-		return domain.ApprovalItem{}, false
-	}
-
-	return item, true
-}
-
-func (s *server) loadPendingApprovalWithSubmissionGuardOrWriteError(w http.ResponseWriter, r *http.Request, trackingID string, action string) (domain.ApprovalItem, bool) {
-	item, ok := s.loadPendingApprovalOrWriteError(w, r, trackingID)
-	if !ok {
-		return domain.ApprovalItem{}, false
-	}
-
-	record, err := s.loadSubmissionRecord(r, trackingID)
-	if err != nil {
-		s.log.Error("failed to load submission before approval action", logger.Fields{
-			"error":          err.Error(),
-			"tracking_id":    trackingID,
-			"action":         action,
-			"correlation_id": item.CorrelationID,
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to load submission before approval action")
-		return domain.ApprovalItem{}, false
-	}
-
-	if record.Status != domain.SubmissionHumanReviewRequired {
-		reason := "Approval action rejected because submission is not in HUMAN_REVIEW_REQUIRED state."
-
-		s.log.Info("approval action rejected due to invalid submission state", logger.Fields{
-			"tracking_id":       trackingID,
-			"invoice_id":        item.InvoiceID,
-			"action":            action,
-			"submission_status": record.Status,
-			"approval_status":   item.Status,
-			"correlation_id":    item.CorrelationID,
-		})
-
-		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-			EventID:       "audit_" + trackingID + "_approval_action_rejected_invalid_state_" + action,
-			CorrelationID: item.CorrelationID,
-			TrackingID:    trackingID,
-			InvoiceID:     item.InvoiceID,
-			Service:       serviceName,
-			Action:        "approval_action_rejected_invalid_state",
-			Outcome:       "rejected",
-			Reason:        reason,
-			Fields: map[string]any{
-				"action":            action,
-				"submission_status": record.Status,
-				"approval_status":   item.Status,
-			},
-		}); err != nil {
-			s.log.Error("failed to publish audit event", logger.Fields{
-				"error":          err.Error(),
-				"tracking_id":    trackingID,
-				"correlation_id": item.CorrelationID,
-			})
-		}
-
-		httpx.WriteError(w, r, http.StatusConflict, reason)
-		return domain.ApprovalItem{}, false
-	}
-
-	return item, true
 }
 
 func (s *server) loadSubmissionRecord(r *http.Request, trackingID string) (domain.SubmissionRecord, error) {
@@ -645,4 +694,193 @@ func reopenApprovalItem(
 	existing.UpdatedAtUTC = time.Now().UTC()
 
 	return existing
+}
+
+func approvalStatusForAction(action string) (domain.ApprovalStatus, bool) {
+	switch action {
+	case "approve":
+		return domain.ApprovalApproved, true
+	case "reject":
+		return domain.ApprovalRejected, true
+	case "request-info":
+		return domain.ApprovalRequestInfo, true
+	default:
+		return "", false
+	}
+}
+
+func canReconcileApprovalAction(
+	action string,
+	submissionStatus domain.SubmissionStatus,
+) bool {
+	switch action {
+	case "approve":
+		switch submissionStatus {
+		case domain.SubmissionHumanReviewRequired,
+			domain.SubmissionApprovedByHuman,
+			domain.SubmissionPaymentPending,
+			domain.SubmissionPaid,
+			domain.SubmissionPaymentFailed:
+			return true
+		}
+
+	case "reject":
+		switch submissionStatus {
+		case domain.SubmissionHumanReviewRequired,
+			domain.SubmissionRejectedByHuman:
+			return true
+		}
+
+	case "request-info":
+		switch submissionStatus {
+		case domain.SubmissionHumanReviewRequired,
+			domain.SubmissionInfoRequested:
+			return true
+		}
+	}
+
+	return false
+}
+
+func shouldApplySubmissionApproval(
+	action string,
+	submissionStatus domain.SubmissionStatus,
+) bool {
+	return submissionStatus == domain.SubmissionHumanReviewRequired &&
+		canReconcileApprovalAction(action, submissionStatus)
+}
+
+func shouldPublishApprovalPayment(
+	submissionStatus domain.SubmissionStatus,
+) bool {
+	switch submissionStatus {
+	case domain.SubmissionHumanReviewRequired,
+		domain.SubmissionApprovedByHuman:
+		return true
+	default:
+		return false
+	}
+}
+
+func approvalEffectEventID(
+	item domain.ApprovalItem,
+	effect string,
+) string {
+	version := item.UpdatedAtUTC.UTC().Format("20060102T150405000000000")
+	return effect + "_" + item.TrackingID + "_" + version
+}
+
+func (s *server) loadApprovalForActionOrWriteError(
+	w http.ResponseWriter,
+	r *http.Request,
+	trackingID string,
+	action string,
+) (
+	domain.ApprovalItem,
+	domain.SubmissionRecord,
+	bool,
+	bool,
+) {
+	desiredStatus, validAction := approvalStatusForAction(action)
+	if !validAction {
+		httpx.WriteError(w, r, http.StatusBadRequest, "unknown approval action")
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	var item domain.ApprovalItem
+	found, err := s.dapr.GetState(
+		r.Context(),
+		stateStore,
+		approvalKey(trackingID),
+		&item,
+	)
+	if err != nil {
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"failed to load approval",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	if !found {
+		httpx.WriteError(w, r, http.StatusNotFound, "approval not found")
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	record, err := s.loadSubmissionRecord(r, trackingID)
+	if err != nil {
+		s.log.Error("failed to load submission before approval reconciliation", logger.Fields{
+			"error":           err.Error(),
+			"tracking_id":     trackingID,
+			"action":          action,
+			"approval_status": item.Status,
+			"correlation_id":  item.CorrelationID,
+		})
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"failed to load submission before approval action",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	if item.Status == domain.ApprovalPending {
+		if record.Status != domain.SubmissionHumanReviewRequired {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusConflict,
+				"approval action rejected because submission is not in HUMAN_REVIEW_REQUIRED state",
+			)
+			return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		}
+
+		return item, record, true, true
+	}
+
+	if item.Status != desiredStatus {
+		s.log.Info("conflicting approval retry rejected", logger.Fields{
+			"tracking_id":      trackingID,
+			"requested_action": action,
+			"approval_status":  item.Status,
+			"correlation_id":   item.CorrelationID,
+		})
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusConflict,
+			"approval was already completed with a different action",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	if !canReconcileApprovalAction(action, record.Status) {
+		s.log.Info("approval retry rejected for incompatible submission state", logger.Fields{
+			"tracking_id":       trackingID,
+			"requested_action":  action,
+			"approval_status":   item.Status,
+			"submission_status": record.Status,
+			"correlation_id":    item.CorrelationID,
+		})
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusConflict,
+			"stored approval action cannot be reconciled with current submission state",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+	}
+
+	s.log.Info("retrying stored approval action", logger.Fields{
+		"tracking_id":       trackingID,
+		"action":            action,
+		"approval_status":   item.Status,
+		"submission_status": record.Status,
+		"correlation_id":    item.CorrelationID,
+	})
+
+	return item, record, false, true
 }

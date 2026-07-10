@@ -348,6 +348,40 @@ assert_submission_revision() {
   pass "$label revision_number -> $expected_revision"
 }
 
+assert_approval_action_code() {
+  local tracking_id="$1"
+  local action="$2"
+  local correlation_id="$3"
+  local expected_code="$4"
+  local label="$5"
+  local body="$TMP_DIR/approval-action-${action}-${tracking_id}.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -H "X-Correlation-Id: $correlation_id" \
+      -H "X-Demo-Role: approver" \
+      --data '{
+        "actor": "verify.approver@northwind.example",
+        "reason": "Verification retry and conflict test."
+      }' \
+      "$BASE_URL/approvals/$tracking_id/$action" || true
+  )"
+
+  if [ "$code" != "$expected_code" ]; then
+    printf "Approval action response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label expected HTTP $expected_code but got HTTP $code"
+  fi
+
+  pass "$label returned HTTP $expected_code"
+}
+
 approve_submission() {
   local tracking_id="$1"
   local correlation_id="$2"
@@ -373,6 +407,41 @@ approve_submission() {
   fi
 
   pass "$tracking_id human approval accepted"
+}
+
+assert_audit_action_count_at_least() {
+  local correlation_id="$1"
+  local action="$2"
+  local minimum="$3"
+  local label="$4"
+  local body="$TMP_DIR/audit-count-${correlation_id}-${action}.json"
+
+  for _ in $(seq 1 60); do
+    curl -sS \
+      -H "X-Correlation-Id: verify-audit-count-$correlation_id" \
+      -H "X-Demo-Role: auditor" \
+      "$BASE_URL/audit/$correlation_id" > "$body" || true
+
+    local count
+    count="$(
+      jq \
+        --arg action "$action" \
+        '[.events[]? | select(.action == $action)] | length' \
+        "$body" 2>/dev/null || printf "0"
+    )"
+
+    if [ "$count" -ge "$minimum" ] 2>/dev/null; then
+      pass "$label audit action $action count >= $minimum"
+      return
+    fi
+
+    sleep 1
+  done
+
+  printf "Audit body for correlation %s:\n" "$correlation_id" >&2
+  cat "$body" >&2 || true
+  printf "\n" >&2
+  fail "$label expected at least $minimum audit events with action $action"
 }
 
 wait_for_audit_actions() {
@@ -708,6 +777,10 @@ request_info_submission "$TRACK_1003" "$RUN_ID-request-info-1003"
 wait_for_submission_status "$TRACK_1003" "INFO_REQUESTED" "INV-1003 request info"
 wait_for_approval_status "$TRACK_1003" "REQUEST_INFO" "INV-1003 request info"
 
+assert_approval_action_code   "$TRACK_1003"   "request-info"   "$RUN_ID-request-info-retry-1003"   "200"   "INV-1003 identical request-info retry"
+
+wait_for_submission_status   "$TRACK_1003"   "INFO_REQUESTED"   "INV-1003 remains info requested after retry"
+
 submit_additional_info "$TRACK_1003" "$RUN_ID-additional-info-1003"
 assert_submission_revision "$TRACK_1003" "2" "INV-1003 resumed submission"
 
@@ -716,6 +789,12 @@ wait_for_approval_pending "$TRACK_1003" "INV-1003 reopened review"
 
 approve_submission "$TRACK_1003" "$RUN_ID-approve-1003"
 wait_for_submission_status "$TRACK_1003" "PAID" "INV-1003"
+
+assert_approval_action_code   "$TRACK_1003"   "approve"   "$RUN_ID-approve-retry-1003"   "200"   "INV-1003 identical approve retry after payment"
+
+wait_for_submission_status   "$TRACK_1003"   "PAID"   "INV-1003 remains paid after approve retry"
+
+assert_approval_action_code   "$TRACK_1003"   "reject"   "$RUN_ID-conflicting-reject-1003"   "409"   "INV-1003 conflicting reject after approval"
 
 wait_for_audit_actions "$CORR_1003" \
   "submission_accepted" \
@@ -727,6 +806,18 @@ wait_for_audit_actions "$CORR_1003" \
   "approval_item_reopened" \
   "human_approved" \
   "payment_succeeded"
+
+assert_audit_action_count_at_least \
+  "$CORR_1003" \
+  "decision_produced" \
+  "2" \
+  "INV-1003 revision-safe decisions"
+
+assert_audit_action_count_at_least \
+  "$CORR_1003" \
+  "approval_required_published" \
+  "2" \
+  "INV-1003 revision-safe approval routing"
 
 log "Scenario: INV-1007 duplicate of INV-1001 -> no second processing"
 CORR_1007="$RUN_ID-1007"
