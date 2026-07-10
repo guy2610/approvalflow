@@ -97,6 +97,8 @@ run_gateway_smoke_tests() {
   assert_http_code "GET" "/audit/smoke-authz" "200" "audit-with-auditor" -H "X-Demo-Role: auditor"
   assert_http_code "GET" "/analytics/summary" "403" "analytics-without-role"
   assert_http_code "GET" "/analytics/summary" "200" "analytics-with-controller" -H "X-Demo-Role: controller"
+  assert_http_code "GET" "/notifications/nonexistent" "403" "notifications-without-role"
+  assert_http_code "GET" "/notifications/nonexistent" "404" "notifications-with-submitter" -H "X-Demo-Role: submitter"
 }
 
 wait_for_gateway() {
@@ -427,6 +429,105 @@ assert_no_audit_action() {
   pass "$correlation_id does not contain $action"
 }
 
+wait_for_notification() {
+  local tracking_id="$1"
+  local expected_status="$2"
+  local label="$3"
+  local body="$TMP_DIR/notification-$tracking_id.json"
+
+  for _ in $(seq 1 60); do
+    local code
+
+    code="$(
+      curl -sS \
+        -o "$body" \
+        -w "%{http_code}" \
+        -H "X-Correlation-Id: verify-notification-$tracking_id" \
+        -H "X-Demo-Role: submitter" \
+        "$BASE_URL/notifications/$tracking_id" || true
+    )"
+
+    if [ "$code" = "200" ]; then
+      local status
+      local acknowledged
+
+      status="$(jq -r '.status // empty' "$body")"
+      acknowledged="$(jq -r '.acknowledged // false' "$body")"
+
+      if [ "$status" = "$expected_status" ] && [ "$acknowledged" = "false" ]; then
+        pass "$label notification -> $expected_status and unacknowledged"
+        return
+      fi
+    fi
+
+    sleep 1
+  done
+
+  printf "Notification body for %s:\n" "$tracking_id" >&2
+  cat "$body" >&2 || true
+  printf "\n" >&2
+  fail "$label notification did not reach $expected_status"
+}
+
+acknowledge_notification() {
+  local tracking_id="$1"
+  local label="$2"
+  local body="$TMP_DIR/notification-ack-$tracking_id.json"
+  local code
+
+  code="$(
+    curl -sS \
+      -o "$body" \
+      -w "%{http_code}" \
+      -X POST \
+      -H "X-Correlation-Id: verify-notification-ack-$tracking_id" \
+      -H "X-Demo-Role: submitter" \
+      "$BASE_URL/notifications/$tracking_id/acknowledge" || true
+  )"
+
+  if [ "$code" != "200" ]; then
+    printf "Acknowledge response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label acknowledge expected HTTP 200 but got HTTP $code"
+  fi
+
+  if ! jq -e '
+    .acknowledged == true
+    and (.acknowledged_at_utc != null)
+  ' "$body" >/dev/null; then
+    printf "Acknowledge response body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label notification was not acknowledged"
+  fi
+
+  pass "$label notification acknowledged"
+}
+
+assert_notification_acknowledged() {
+  local tracking_id="$1"
+  local label="$2"
+  local body="$TMP_DIR/notification-ack-read-$tracking_id.json"
+
+  curl -sS \
+    -H "X-Correlation-Id: verify-notification-ack-read-$tracking_id" \
+    -H "X-Demo-Role: submitter" \
+    "$BASE_URL/notifications/$tracking_id" > "$body"
+
+  if ! jq -e '
+    .acknowledged == true
+    and (.acknowledged_at_utc != null)
+  ' "$body" >/dev/null; then
+    printf "Notification body:\n" >&2
+    cat "$body" >&2 || true
+    printf "\n" >&2
+    fail "$label acknowledgement was not persisted"
+  fi
+
+  pass "$label acknowledgement persisted"
+}
+
 assert_analytics_summary() {
   local body="$TMP_DIR/analytics-summary.json"
   local code
@@ -569,6 +670,10 @@ TRACK_1001="$(printf "%s" "$RESP_1001" | jq -r '.tracking_id')"
 [ "$TRACK_1001" != "null" ] && [ -n "$TRACK_1001" ] || fail "INV-1001 missing tracking_id"
 
 wait_for_submission_status "$TRACK_1001" "PAID" "INV-1001"
+wait_for_notification "$TRACK_1001" "PAID" "INV-1001"
+acknowledge_notification "$TRACK_1001" "INV-1001"
+assert_notification_acknowledged "$TRACK_1001" "INV-1001"
+
 wait_for_audit_actions "$CORR_1001" \
   "submission_accepted" \
   "decision_produced" \
@@ -649,6 +754,8 @@ TRACK_1012="$(printf "%s" "$RESP_1012" | jq -r '.tracking_id')"
 wait_for_approval_pending "$TRACK_1012" "INV-1012"
 approve_submission "$TRACK_1012" "$RUN_ID-approve-1012"
 wait_for_submission_status "$TRACK_1012" "PAYMENT_FAILED" "INV-1012"
+wait_for_notification "$TRACK_1012" "PAYMENT_FAILED" "INV-1012"
+
 wait_for_audit_actions "$CORR_1012" \
   "submission_accepted" \
   "approval_required_published" \

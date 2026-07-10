@@ -39,6 +39,7 @@ func main() {
 	mux.HandleFunc("/approvals/", requireDemoRole(srv.handleApprovalAction, "approver", "admin"))
 	mux.HandleFunc("/audit/", requireDemoRole(srv.handleAuditTrail, "auditor", "admin"))
 	mux.HandleFunc("/analytics/summary", requireDemoRole(srv.handleAnalyticsSummary, "controller", "admin"))
+	mux.HandleFunc("/notifications/", requireDemoRole(srv.handleNotifications, "submitter", "controller", "admin"))
 
 	rateLimitPerMinute := parsePositiveInt(config.GetEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", "120"), 120)
 	rateLimiter := httpx.NewRateLimiter(rateLimitPerMinute, time.Minute)
@@ -218,6 +219,64 @@ func (s *server) handleAuditTrail(w http.ResponseWriter, r *http.Request) {
 			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
 		})
 		httpx.WriteError(w, r, http.StatusBadGateway, "audit service unavailable")
+		return
+	}
+
+	writeRawJSON(w, status, raw)
+}
+
+func (s *server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/notifications/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "missing notification path")
+		return
+	}
+
+	if strings.HasSuffix(path, "/acknowledge") {
+		if r.Method != http.MethodPost {
+			httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		status, raw, err := s.dapr.InvokeRawPassthrough(
+			r.Context(),
+			"audit-service",
+			"notifications/"+path,
+			http.MethodPost,
+			nil,
+		)
+		if err != nil {
+			s.log.Error("notification service unavailable", logger.Fields{
+				"error":          err.Error(),
+				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+			})
+			httpx.WriteError(w, r, http.StatusBadGateway, "notification service unavailable")
+			return
+		}
+
+		writeRawJSON(w, status, raw)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		httpx.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	status, raw, err := s.dapr.InvokeRawPassthrough(
+		r.Context(),
+		"audit-service",
+		"notifications/"+path,
+		http.MethodGet,
+		nil,
+	)
+	if err != nil {
+		s.log.Error("notification service unavailable", logger.Fields{
+			"error":          err.Error(),
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+		httpx.WriteError(w, r, http.StatusBadGateway, "notification service unavailable")
 		return
 	}
 

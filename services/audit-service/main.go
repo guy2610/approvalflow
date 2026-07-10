@@ -55,6 +55,7 @@ func main() {
 	mux.HandleFunc("/events/audit", srv.handleAuditEvent)
 	mux.HandleFunc("/audit/", srv.handleAuditTrail)
 	mux.HandleFunc("/analytics/summary", srv.handleAnalyticsSummary)
+	mux.HandleFunc("/notifications/", srv.handleNotifications)
 
 	handler := httpx.CorrelationMiddleware(mux)
 
@@ -126,6 +127,22 @@ func (s *server) handleAuditEvent(w http.ResponseWriter, r *http.Request) {
 			"action":         event.Action,
 		})
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if err := s.persistNotificationForAuditEvent(r, event); err != nil {
+		s.log.Error("failed to persist workflow notification", logger.Fields{
+			"error":          err.Error(),
+			"event_id":       event.EventID,
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"failed to persist workflow notification",
+		)
 		return
 	}
 
