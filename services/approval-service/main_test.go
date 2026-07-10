@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"approvalflow/internal/domain"
 )
@@ -78,5 +79,135 @@ func TestReopenApprovalItemResetsActionAndUsesLatestDecisionContext(t *testing.T
 
 	if got.UpdatedAtUTC.IsZero() {
 		t.Fatalf("expected updated timestamp")
+	}
+}
+
+func TestApprovalStatusForAction(t *testing.T) {
+	tests := map[string]domain.ApprovalStatus{
+		"approve":      domain.ApprovalApproved,
+		"reject":       domain.ApprovalRejected,
+		"request-info": domain.ApprovalRequestInfo,
+	}
+
+	for action, expected := range tests {
+		got, ok := approvalStatusForAction(action)
+		if !ok {
+			t.Fatalf("expected action %s to be valid", action)
+		}
+		if got != expected {
+			t.Fatalf(
+				"expected %s for action %s, got %s",
+				expected,
+				action,
+				got,
+			)
+		}
+	}
+
+	if _, ok := approvalStatusForAction("unknown"); ok {
+		t.Fatalf("expected unknown action to be rejected")
+	}
+}
+
+func TestCanReconcileApproveAcrossPartialFailureStates(t *testing.T) {
+	allowed := []domain.SubmissionStatus{
+		domain.SubmissionHumanReviewRequired,
+		domain.SubmissionApprovedByHuman,
+		domain.SubmissionPaymentPending,
+		domain.SubmissionPaid,
+		domain.SubmissionPaymentFailed,
+	}
+
+	for _, status := range allowed {
+		if !canReconcileApprovalAction("approve", status) {
+			t.Fatalf("expected approve retry to reconcile status %s", status)
+		}
+	}
+
+	if canReconcileApprovalAction("approve", domain.SubmissionRejectedByHuman) {
+		t.Fatalf("approve must not reconcile a rejected submission")
+	}
+}
+
+func TestRejectAndRequestInfoReconciliationStates(t *testing.T) {
+	if !canReconcileApprovalAction(
+		"reject",
+		domain.SubmissionRejectedByHuman,
+	) {
+		t.Fatalf("expected rejected submission to accept identical reject retry")
+	}
+
+	if !canReconcileApprovalAction(
+		"request-info",
+		domain.SubmissionInfoRequested,
+	) {
+		t.Fatalf("expected info-requested submission to accept identical retry")
+	}
+
+	if canReconcileApprovalAction(
+		"request-info",
+		domain.SubmissionProcessing,
+	) {
+		t.Fatalf("stale request-info retry must not move a resumed submission backwards")
+	}
+}
+
+func TestApprovalPaymentPublishingDecision(t *testing.T) {
+	if !shouldPublishApprovalPayment(
+		domain.SubmissionApprovedByHuman,
+	) {
+		t.Fatalf("expected payment publish while approved submission awaits payment")
+	}
+
+	terminal := []domain.SubmissionStatus{
+		domain.SubmissionPaymentPending,
+		domain.SubmissionPaid,
+		domain.SubmissionPaymentFailed,
+	}
+
+	for _, status := range terminal {
+		if shouldPublishApprovalPayment(status) {
+			t.Fatalf(
+				"must not republish payment after submission reached %s",
+				status,
+			)
+		}
+	}
+}
+
+func TestApprovalEffectEventIDIsStableAndVersioned(t *testing.T) {
+	firstTime := time.Date(
+		2026,
+		time.July,
+		10,
+		12,
+		0,
+		0,
+		123,
+		time.UTC,
+	)
+	secondTime := firstTime.Add(time.Second)
+
+	firstItem := domain.ApprovalItem{
+		TrackingID:   "sub-123",
+		UpdatedAtUTC: firstTime,
+	}
+	retryItem := firstItem
+	secondRevision := firstItem
+	secondRevision.UpdatedAtUTC = secondTime
+
+	first := approvalEffectEventID(firstItem, "audit_info_requested")
+	retry := approvalEffectEventID(retryItem, "audit_info_requested")
+	later := approvalEffectEventID(
+		secondRevision,
+		"audit_info_requested",
+	)
+
+	if first != retry {
+		t.Fatalf("expected retry-stable event id")
+	}
+
+	if first == later {
+		t.Fatalf("expected different event id for later approval cycle")
 	}
 }
