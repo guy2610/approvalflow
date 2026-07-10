@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help setup compose-up compose-up-detached compose-down compose-logs test verify lint fmt clean
+.PHONY: help setup compose-up compose-up-detached compose-down compose-logs test verify openapi-lint lint fmt clean
 
 help:
 	@echo "ApprovalFlow commands:"
@@ -11,6 +11,7 @@ help:
 	@echo "  make compose-logs       - follow docker compose logs"
 	@echo "  make test               - run Go tests"
 	@echo "  make verify             - run verification scenarios and safety checks"
+	@echo "  make openapi-lint       - validate docs/openapi.yaml with Redocly"
 	@echo "  make fmt                - format Go code"
 	@echo "  make clean              - remove local generated files"
 
@@ -35,6 +36,9 @@ test:
 
 verify:
 	./scripts/verify.sh
+
+openapi-lint:
+	docker run --rm -v "$(CURDIR):/spec" redocly/cli:latest lint /spec/docs/openapi.yaml
 
 lint:
 	@echo "No linter configured yet. Run 'make test' for current checks."

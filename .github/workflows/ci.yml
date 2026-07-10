@@ -26,5 +26,12 @@ jobs:
       - name: Check verification script syntax
         run: bash -n scripts/verify.sh
 
+      - name: Lint OpenAPI specification
+        run: |
+          docker run --rm \
+            -v "$PWD:/spec" \
+            redocly/cli:latest \
+            lint /spec/docs/openapi.yaml
+
       - name: Check Docker Compose config
         run: docker compose config --quiet
