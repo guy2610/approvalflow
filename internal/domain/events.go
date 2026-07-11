@@ -35,6 +35,7 @@ type ApprovalRequiredEvent struct {
 	CorrelationID    string    `json:"correlation_id"`
 	TrackingID       string    `json:"tracking_id"`
 	InvoiceID        string    `json:"invoice_id,omitempty"`
+	RevisionNumber   int       `json:"revision_number"`
 	AmountUSD        float64   `json:"amount_usd"`
 	Reason           string    `json:"reason"`
 	Violations       []string  `json:"violations"`

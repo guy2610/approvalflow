@@ -113,56 +113,119 @@ func (s *server) handleApprovalRequired(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if found {
-		if existing.Status == domain.ApprovalRequestInfo {
+		disposition := classifyApprovalRequiredEvent(existing, event)
+
+		switch disposition {
+		case approvalEventReopen:
 			reopened := reopenApprovalItem(existing, event)
 
-			if err := s.dapr.SaveState(r.Context(), stateStore, key, reopened); err != nil {
-				httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reopen approval item")
+			if err := s.dapr.SaveState(
+				r.Context(),
+				stateStore,
+				key,
+				reopened,
+			); err != nil {
+				httpx.WriteError(
+					w,
+					r,
+					http.StatusInternalServerError,
+					"failed to reopen approval item",
+				)
 				return
 			}
 
-			s.log.Info("approval item reopened after additional information", logger.Fields{
-				"tracking_id":    reopened.TrackingID,
-				"invoice_id":     reopened.InvoiceID,
-				"amount_usd":     reopened.AmountUSD,
-				"violations":     reopened.Violations,
-				"correlation_id": reopened.CorrelationID,
-			})
-
-			if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-				EventID:       "audit_" + reopened.TrackingID + "_approval_item_reopened",
-				CorrelationID: reopened.CorrelationID,
-				TrackingID:    reopened.TrackingID,
-				InvoiceID:     reopened.InvoiceID,
-				Service:       serviceName,
-				Action:        "approval_item_reopened",
-				Outcome:       string(reopened.Status),
-				Reason:        reopened.Reason,
-				Fields: map[string]any{
-					"amount_usd":        reopened.AmountUSD,
-					"violations":        reopened.Violations,
-					"agent_recommended": reopened.AgentRecommended,
-					"agent_confidence":  reopened.AgentConfidence,
-					"agent_cited_rules": reopened.AgentCitedRules,
+			s.log.Info(
+				"approval item reopened after additional information",
+				logger.Fields{
+					"tracking_id":     reopened.TrackingID,
+					"invoice_id":      reopened.InvoiceID,
+					"amount_usd":      reopened.AmountUSD,
+					"revision_number": reopened.RevisionNumber,
+					"source_event_id": reopened.SourceEventID,
+					"violations":      reopened.Violations,
+					"correlation_id":  reopened.CorrelationID,
 				},
-			}); err != nil {
-				s.log.Error("failed to publish approval reopen audit event", logger.Fields{
-					"error":          err.Error(),
-					"tracking_id":    reopened.TrackingID,
-					"correlation_id": reopened.CorrelationID,
-				})
+			)
+
+			if err := auditlog.Publish(
+				r.Context(),
+				s.dapr,
+				auditlog.Event{
+					EventID: "audit_" +
+						reopened.TrackingID +
+						"_approval_item_reopened_" +
+						event.EventID,
+					CorrelationID: reopened.CorrelationID,
+					TrackingID:    reopened.TrackingID,
+					InvoiceID:     reopened.InvoiceID,
+					Service:       serviceName,
+					Action:        "approval_item_reopened",
+					Outcome:       string(reopened.Status),
+					Reason:        reopened.Reason,
+					Fields: map[string]any{
+						"amount_usd":        reopened.AmountUSD,
+						"revision_number":   reopened.RevisionNumber,
+						"source_event_id":   reopened.SourceEventID,
+						"violations":        reopened.Violations,
+						"agent_recommended": reopened.AgentRecommended,
+						"agent_confidence":  reopened.AgentConfidence,
+						"agent_cited_rules": reopened.AgentCitedRules,
+					},
+				},
+			); err != nil {
+				s.log.Error(
+					"failed to publish approval reopen audit event",
+					logger.Fields{
+						"error":          err.Error(),
+						"tracking_id":    reopened.TrackingID,
+						"correlation_id": reopened.CorrelationID,
+					},
+				)
 			}
 
-			w.WriteHeader(http.StatusNoContent)
-			return
+		case approvalEventStale:
+			s.log.Info(
+				"stale approval required event ignored",
+				logger.Fields{
+					"tracking_id":              event.TrackingID,
+					"incoming_event_id":        event.EventID,
+					"incoming_revision_number": event.RevisionNumber,
+					"stored_event_id":          existing.SourceEventID,
+					"stored_revision_number":   existing.RevisionNumber,
+					"approval_status":          existing.Status,
+					"correlation_id":           event.CorrelationID,
+				},
+			)
+
+		case approvalEventIgnore:
+			s.log.Info(
+				"newer approval event ignored for incompatible approval state",
+				logger.Fields{
+					"tracking_id":              event.TrackingID,
+					"incoming_event_id":        event.EventID,
+					"incoming_revision_number": event.RevisionNumber,
+					"stored_event_id":          existing.SourceEventID,
+					"stored_revision_number":   existing.RevisionNumber,
+					"approval_status":          existing.Status,
+					"correlation_id":           event.CorrelationID,
+				},
+			)
+
+		default:
+			s.log.Info(
+				"duplicate approval required event ignored",
+				logger.Fields{
+					"tracking_id":              event.TrackingID,
+					"incoming_event_id":        event.EventID,
+					"incoming_revision_number": event.RevisionNumber,
+					"stored_event_id":          existing.SourceEventID,
+					"stored_revision_number":   existing.RevisionNumber,
+					"approval_status":          existing.Status,
+					"correlation_id":           event.CorrelationID,
+				},
+			)
 		}
 
-		s.log.Info("duplicate approval required event ignored", logger.Fields{
-			"tracking_id":     event.TrackingID,
-			"invoice_id":      event.InvoiceID,
-			"approval_status": existing.Status,
-			"correlation_id":  event.CorrelationID,
-		})
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -171,6 +234,8 @@ func (s *server) handleApprovalRequired(w http.ResponseWriter, r *http.Request) 
 	item := domain.ApprovalItem{
 		TrackingID:       event.TrackingID,
 		InvoiceID:        event.InvoiceID,
+		SourceEventID:    event.EventID,
+		RevisionNumber:   event.RevisionNumber,
 		AmountUSD:        event.AmountUSD,
 		Status:           domain.ApprovalPending,
 		Reason:           event.Reason,
@@ -671,11 +736,57 @@ func approvalKey(trackingID string) string {
 	return "approval:" + trackingID
 }
 
+type approvalEventDisposition string
+
+const (
+	approvalEventDuplicate approvalEventDisposition = "duplicate"
+	approvalEventStale     approvalEventDisposition = "stale"
+	approvalEventReopen    approvalEventDisposition = "reopen"
+	approvalEventIgnore    approvalEventDisposition = "ignore"
+)
+
+func classifyApprovalRequiredEvent(
+	existing domain.ApprovalItem,
+	event domain.ApprovalRequiredEvent,
+) approvalEventDisposition {
+	if existing.SourceEventID != "" &&
+		event.EventID != "" &&
+		existing.SourceEventID == event.EventID {
+		return approvalEventDuplicate
+	}
+
+	storedRevision := existing.RevisionNumber
+	if storedRevision <= 0 {
+		storedRevision = 1
+	}
+
+	incomingRevision := event.RevisionNumber
+	if incomingRevision <= 0 {
+		incomingRevision = 1
+	}
+
+	if incomingRevision < storedRevision {
+		return approvalEventStale
+	}
+
+	if incomingRevision == storedRevision {
+		return approvalEventDuplicate
+	}
+
+	if existing.Status == domain.ApprovalRequestInfo {
+		return approvalEventReopen
+	}
+
+	return approvalEventIgnore
+}
+
 func reopenApprovalItem(
 	existing domain.ApprovalItem,
 	event domain.ApprovalRequiredEvent,
 ) domain.ApprovalItem {
 	existing.InvoiceID = event.InvoiceID
+	existing.SourceEventID = event.EventID
+	existing.RevisionNumber = event.RevisionNumber
 	existing.AmountUSD = event.AmountUSD
 	existing.Status = domain.ApprovalPending
 	existing.Reason = event.Reason

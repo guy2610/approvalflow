@@ -211,3 +211,150 @@ func TestApprovalEffectEventIDIsStableAndVersioned(t *testing.T) {
 		t.Fatalf("expected different event id for later approval cycle")
 	}
 }
+
+func TestClassifyApprovalRequiredEventDetectsSameEventDuplicate(t *testing.T) {
+	existing := domain.ApprovalItem{
+		SourceEventID:  "evt-revision-2",
+		RevisionNumber: 2,
+		Status:         domain.ApprovalRequestInfo,
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, event); got != approvalEventDuplicate {
+		t.Fatalf("expected duplicate, got %s", got)
+	}
+}
+
+func TestClassifyApprovalRequiredEventRejectsOlderRevision(t *testing.T) {
+	existing := domain.ApprovalItem{
+		SourceEventID:  "evt-revision-3",
+		RevisionNumber: 3,
+		Status:         domain.ApprovalRequestInfo,
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, event); got != approvalEventStale {
+		t.Fatalf("expected stale, got %s", got)
+	}
+}
+
+func TestClassifyApprovalRequiredEventTreatsSameRevisionAsDuplicate(t *testing.T) {
+	existing := domain.ApprovalItem{
+		SourceEventID:  "evt-revision-2-original",
+		RevisionNumber: 2,
+		Status:         domain.ApprovalRequestInfo,
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2-redelivery",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, event); got != approvalEventDuplicate {
+		t.Fatalf("expected duplicate, got %s", got)
+	}
+}
+
+func TestClassifyApprovalRequiredEventReopensNewerRevision(t *testing.T) {
+	existing := domain.ApprovalItem{
+		SourceEventID:  "evt-revision-1",
+		RevisionNumber: 1,
+		Status:         domain.ApprovalRequestInfo,
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, event); got != approvalEventReopen {
+		t.Fatalf("expected reopen, got %s", got)
+	}
+}
+
+func TestClassifyApprovalRequiredEventDoesNotReopenCompletedApproval(t *testing.T) {
+	existing := domain.ApprovalItem{
+		SourceEventID:  "evt-revision-1",
+		RevisionNumber: 1,
+		Status:         domain.ApprovalApproved,
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, event); got != approvalEventIgnore {
+		t.Fatalf("expected ignore, got %s", got)
+	}
+}
+
+func TestClassifyApprovalRequiredEventSupportsLegacyRevisionZero(t *testing.T) {
+	existing := domain.ApprovalItem{
+		Status: domain.ApprovalRequestInfo,
+	}
+
+	initialEvent := domain.ApprovalRequiredEvent{
+		EventID:        "evt-initial",
+		RevisionNumber: 1,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, initialEvent); got != approvalEventDuplicate {
+		t.Fatalf("expected legacy initial event to be duplicate, got %s", got)
+	}
+
+	revisedEvent := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+	}
+
+	if got := classifyApprovalRequiredEvent(existing, revisedEvent); got != approvalEventReopen {
+		t.Fatalf("expected revision 2 to reopen legacy item, got %s", got)
+	}
+}
+
+func TestReopenApprovalItemStoresLatestEventMetadata(t *testing.T) {
+	existing := domain.ApprovalItem{
+		TrackingID:     "sub-123",
+		SourceEventID:  "evt-revision-1",
+		RevisionNumber: 1,
+		Status:         domain.ApprovalRequestInfo,
+		ActionBy:       "approver@example.local",
+		ActionReason:   "Need more information.",
+	}
+
+	event := domain.ApprovalRequiredEvent{
+		EventID:        "evt-revision-2",
+		RevisionNumber: 2,
+		TrackingID:     "sub-123",
+		InvoiceID:      "INV-1003",
+		AmountUSD:      1820,
+		Reason:         "Still requires human review.",
+	}
+
+	got := reopenApprovalItem(existing, event)
+
+	if got.SourceEventID != event.EventID {
+		t.Fatalf("expected source event %q, got %q", event.EventID, got.SourceEventID)
+	}
+
+	if got.RevisionNumber != 2 {
+		t.Fatalf("expected revision 2, got %d", got.RevisionNumber)
+	}
+
+	if got.Status != domain.ApprovalPending {
+		t.Fatalf("expected reopened item to be pending")
+	}
+
+	if got.ActionBy != "" || got.ActionReason != "" {
+		t.Fatalf("expected previous action fields to be cleared")
+	}
+}

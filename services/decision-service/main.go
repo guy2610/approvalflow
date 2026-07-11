@@ -290,6 +290,7 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 			CorrelationID:    event.CorrelationID,
 			TrackingID:       event.TrackingID,
 			InvoiceID:        event.InvoiceID,
+			RevisionNumber:   record.RevisionNumber,
 			AmountUSD:        decision.AmountUSD,
 			Reason:           decision.Reason,
 			Violations:       violationIDs(decision.Violations),

@@ -14,6 +14,8 @@ const (
 type ApprovalItem struct {
 	TrackingID       string         `json:"tracking_id"`
 	InvoiceID        string         `json:"invoice_id,omitempty"`
+	SourceEventID    string         `json:"source_event_id,omitempty"`
+	RevisionNumber   int            `json:"revision_number"`
 	AmountUSD        float64        `json:"amount_usd"`
 	Status           ApprovalStatus `json:"status"`
 	Reason           string         `json:"reason"`
