@@ -188,7 +188,7 @@ This is a local demo focused on workflow and safety behavior.
 
 Known limitations:
 
-- The agent is deterministic/local and does not call a production LLM provider.
+- The default agent provider is deterministic and local; Gemini is optional, and no production-managed LLM integration is evaluated.
 - Payment execution is simulated.
 - Demo role headers are not production authentication.
 - The deployment is local Docker Compose, not a production high-availability setup.

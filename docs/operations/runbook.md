@@ -29,6 +29,36 @@ GET /submissions/{tracking_id}
 GET /approvals
 ````
 
+## Start, stop, and reset
+
+Start the complete local environment:
+
+```bash
+docker compose up --build -d
+```
+
+A normal shutdown preserves PostgreSQL and Redis state in named Docker volumes:
+
+```bash
+docker compose down
+```
+
+Start the services again to continue using the stored local workflow state:
+
+```bash
+docker compose up --build -d
+```
+
+To perform a destructive local reset, including submission, approval, payment, audit, notification, and analytics state:
+
+```bash
+docker compose down -v
+```
+
+The `-v` command removes the named volumes. Use it only when a fully clean local environment is intended.
+
+Redis append-only persistence is enabled for the local demo. This improves restart recovery but does not replace production backup, replication, or disaster-recovery controls.
+
 ## Health checks
 
 Check minimal UI:

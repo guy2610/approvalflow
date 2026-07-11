@@ -132,6 +132,10 @@ paths:
                 duplicate_of: sub_1234567890abcdef
         "400":
           $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestEntityTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "502":
@@ -252,6 +256,10 @@ paths:
                 $ref: "#/components/schemas/SubmissionRecord"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestEntityTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -312,6 +320,10 @@ paths:
                 $ref: "#/components/schemas/ApprovalItem"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestEntityTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -343,6 +355,10 @@ paths:
                 $ref: "#/components/schemas/ApprovalItem"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestEntityTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -374,6 +390,10 @@ paths:
                 $ref: "#/components/schemas/ApprovalItem"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/RequestEntityTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -626,6 +646,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+
+    RequestEntityTooLarge:
+      description: Request body exceeds the configured size limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: request body too large
+
+    UnsupportedMediaType:
+      description: Request Content-Type must be application/json
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: unsupported media type
 
     Forbidden:
       description: Missing or unauthorized demo role
@@ -902,6 +940,13 @@ components:
             type: string
         correlation_id:
           type: string
+        source_event_id:
+          type: string
+          description: Event id that last created or reopened this approval item.
+        revision_number:
+          type: integer
+          minimum: 1
+          description: Submission revision represented by this approval item.
         created_at_utc:
           type: string
           format: date-time
