@@ -431,7 +431,136 @@ const indexHTML = `<!doctype html>
         grid-template-columns: 1fr;
       }
     }
-  </style>
+        /* Approval queue cards override the global button style. */
+      button.approval-item {
+        display: block;
+        width: 100%;
+        padding: 14px 16px;
+        border: 1px solid #d7e0ec;
+        border-radius: 14px;
+        background: #ffffff;
+        color: #102039;
+        text-align: left;
+        font-size: 1rem;
+        font-weight: 400;
+        line-height: 1.4;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+        transform: none;
+      }
+
+      button.approval-item:hover {
+        transform: none;
+      }
+
+      button.approval-item.pending {
+        cursor: pointer;
+        border-color: #aabbd3;
+      }
+
+      button.approval-item.pending:hover {
+        border-color: #2456d8;
+        background: #f7f9ff;
+      }
+
+      button.approval-item.selected {
+        border: 2px solid #2456d8;
+        background: #eef4ff;
+        box-shadow: 0 0 0 3px rgba(36, 86, 216, 0.12);
+      }
+
+      button.approval-item:disabled {
+        opacity: 1;
+        cursor: default;
+        background: #f7f9fc;
+        color: #526176;
+      }
+
+      .approval-item-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 8px;
+      }
+
+      .approval-item-header strong {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-size: 1rem;
+        line-height: 1.3;
+      }
+
+      .approval-item-meta {
+        margin-top: 4px;
+        color: #607089;
+        font-size: 0.9rem;
+        font-weight: 400;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+      }
+
+      button.approval-item .badge {
+        flex: 0 0 auto;
+        font-size: 0.78rem;
+        line-height: 1;
+        padding: 8px 10px;
+      }
+
+      /* Keep long identifiers inside their summary cards. */
+      #lastTracking,
+      #lastCorrelation {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        white-space: normal;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+        font-size: clamp(0.95rem, 1.45vw, 1.55rem);
+        line-height: 1.15;
+      }
+
+      .approval-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 14px;
+        margin: 14px 0 10px;
+      }
+
+      .approval-history-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        white-space: nowrap;
+        font-size: 0.9rem;
+        color: #526176;
+      }
+
+      .approval-history-toggle input {
+        width: auto;
+        margin: 0;
+      }
+
+      .approval-list {
+        max-height: 430px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 6px;
+      }
+
+      .approval-list::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      .approval-list::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(82, 97, 118, 0.32);
+      }
+
+</style>
 </head>
 <body>
   <main class="shell">
@@ -553,7 +682,7 @@ const indexHTML = `<!doctype html>
               <button onclick="submitInvoice()">Submit invoice</button>
               <button class="secondary" onclick="formatJSON()">Format JSON</button>
             </div>
-            <p class="hint">Tip: after submit, the returned tracking ID is copied into the status and approval forms.</p>
+            <p class="hint">Tip: after submit, the returned tracking ID is copied into the submission status form. Human actions are available only for items routed to manual review.</p>
           </div>
         </section>
 
@@ -578,7 +707,24 @@ const indexHTML = `<!doctype html>
           </div>
           <div class="panel-body">
             <div class="button-row">
-              <button onclick="listApprovals()">List approvals</button>
+              <button onclick="listApprovals()">Refresh approvals</button>
+            </div>
+
+            <div class="approval-toolbar">
+              <span id="approvalSummary" class="hint">No approval data loaded yet.</span>
+
+              <label class="approval-history-toggle">
+                <input
+                  id="showCompletedApprovals"
+                  type="checkbox"
+                  onchange="renderCurrentApprovals()"
+                >
+                Show completed
+              </label>
+            </div>
+
+            <div id="approvalList" class="approval-list">
+              <p class="hint">No approval data loaded yet.</p>
             </div>
 
             <div class="two-col">
@@ -593,9 +739,9 @@ const indexHTML = `<!doctype html>
             </div>
 
             <div class="button-row">
-              <button onclick="approvalAction('approve')">Approve</button>
-              <button class="danger" onclick="approvalAction('reject')">Reject</button>
-              <button class="secondary" onclick="approvalAction('request-info')">Request info</button>
+              <button id="approveButton" onclick="approvalAction('approve')" disabled>Approve</button>
+              <button id="rejectButton" class="danger" onclick="approvalAction('reject')" disabled>Reject</button>
+              <button id="requestInfoButton" class="secondary" onclick="approvalAction('request-info')" disabled>Request info</button>
             </div>
           </div>
         </section>
@@ -810,7 +956,6 @@ async function submitInvoice() {
     const result = await parseResponse(response);
     if (result.payload && result.payload.tracking_id) {
       document.getElementById("trackingId").value = result.payload.tracking_id;
-      document.getElementById("approvalTrackingId").value = result.payload.tracking_id;
       document.getElementById("auditCorrelationId").value = correlationId;
     }
     output(result, "Submitted");
@@ -838,6 +983,131 @@ async function getSubmission() {
   }
 }
 
+let currentApprovalItems = [];
+
+function renderCurrentApprovals() {
+  renderApprovals(currentApprovalItems);
+}
+
+function setApprovalActionsEnabled(enabled) {
+  document.getElementById("approveButton").disabled = !enabled;
+  document.getElementById("rejectButton").disabled = !enabled;
+  document.getElementById("requestInfoButton").disabled = !enabled;
+}
+
+function selectApproval(trackingId) {
+  document.getElementById("approvalTrackingId").value = trackingId;
+  setApprovalActionsEnabled(true);
+
+  document.querySelectorAll(".approval-item").forEach(item => {
+    item.classList.toggle(
+      "selected",
+      item.dataset.trackingId === trackingId
+    );
+  });
+}
+
+function renderApprovals(items) {
+  const container = document.getElementById("approvalList");
+  const trackingInput = document.getElementById("approvalTrackingId");
+  const summary = document.getElementById("approvalSummary");
+  const showCompleted =
+    document.getElementById("showCompletedApprovals").checked;
+
+  const approvals = Array.isArray(items) ? items : [];
+  const openItems = approvals.filter(item =>
+    item.status === "PENDING" || item.status === "REQUEST_INFO"
+  );
+  const completedItems = approvals.filter(item =>
+    item.status === "APPROVED" || item.status === "REJECTED"
+  );
+  const visibleItems = showCompleted
+    ? [...openItems, ...completedItems]
+    : openItems;
+
+  currentApprovalItems = approvals;
+
+  container.innerHTML = "";
+  trackingInput.value = "";
+  setApprovalActionsEnabled(false);
+
+  summary.textContent =
+    openItems.length +
+    " open · " +
+    completedItems.length +
+    " completed";
+
+  if (visibleItems.length === 0) {
+    container.innerHTML = showCompleted
+      ? '<p class="hint approval-empty">No approval items found.</p>'
+      : '<p class="hint approval-empty">No open approvals. Enable "Show completed" to view history.</p>';
+    return;
+  }
+
+  visibleItems.forEach(item => {
+    const button = document.createElement("button");
+    const isPending = item.status === "PENDING";
+    const isOpen = isPending || item.status === "REQUEST_INFO";
+
+    button.type = "button";
+    button.className =
+      "approval-item" + (isPending ? " pending" : "");
+    button.dataset.trackingId = item.tracking_id || "";
+    button.disabled = !isPending;
+
+    const header = document.createElement("div");
+    header.className = "approval-item-header";
+
+    const invoice = document.createElement("strong");
+    invoice.textContent = item.invoice_id || "Unknown invoice";
+
+    const status = document.createElement("span");
+    status.className =
+      "badge" +
+      (isPending
+        ? " warning"
+        : item.status === "REJECTED"
+          ? " danger"
+          : "");
+    status.textContent = item.status || "UNKNOWN";
+
+    header.appendChild(invoice);
+    header.appendChild(status);
+
+    const tracking = document.createElement("div");
+    tracking.className = "approval-item-meta";
+    tracking.textContent =
+      (item.tracking_id || "No tracking ID") +
+      " · $" +
+      Number(item.amount_usd || 0).toFixed(2);
+
+    const reason = document.createElement("div");
+    reason.className = "approval-item-meta";
+    reason.textContent = item.reason || "No reason supplied.";
+
+    button.appendChild(header);
+    button.appendChild(tracking);
+    button.appendChild(reason);
+
+    if (isPending) {
+      button.addEventListener("click", () => {
+        selectApproval(item.tracking_id);
+      });
+    } else if (isOpen) {
+      button.title =
+        "This item is waiting for additional information and cannot be actioned yet.";
+    }
+
+    container.appendChild(button);
+  });
+
+  const firstPending = openItems.find(item => item.status === "PENDING");
+
+  if (firstPending && firstPending.tracking_id) {
+    selectApproval(firstPending.tracking_id);
+  }
+}
+
 async function listApprovals() {
   try {
     const response = await fetch("/approvals", {
@@ -846,13 +1116,22 @@ async function listApprovals() {
     });
 
     const result = await parseResponse(response);
-    const first = result.payload && result.payload.items && result.payload.items.find(item => item.status === "PENDING");
-    if (first && first.tracking_id) {
-      document.getElementById("approvalTrackingId").value = first.tracking_id;
+
+    if (result.status >= 200 && result.status < 300) {
+      const items =
+        result.payload && Array.isArray(result.payload.items)
+          ? result.payload.items
+          : [];
+
+      currentApprovalItems = items;
+      renderApprovals(items);
+    } else {
+      renderApprovals([]);
     }
 
     output(result, "Approvals fetched");
   } catch (err) {
+    renderApprovals([]);
     output("List approvals failed: " + err.message, "Request failed");
   }
 }
@@ -876,7 +1155,12 @@ async function approvalAction(action) {
       body: JSON.stringify(payload)
     });
 
-    output(await parseResponse(response), "Approval action");
+    const result = await parseResponse(response);
+    output(result, "Approval action");
+
+    if (result.status >= 200 && result.status < 300) {
+      await listApprovals();
+    }
   } catch (err) {
     output("Approval action failed: " + err.message, "Request failed");
   }

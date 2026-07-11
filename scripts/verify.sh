@@ -12,10 +12,25 @@ cd "$ROOT_DIR"
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
+  local exit_code="$?"
+
+  trap - EXIT
   rm -rf "$TMP_DIR"
+
   if [ "$POLICY_CONFIG_PATH" = "data/.policy-config-verify-runtime.json" ]; then
+    if [ "$START_STACK" = "1" ]; then
+      docker compose down --remove-orphans >/dev/null 2>&1 || true
+    fi
+
     rm -f "$POLICY_CONFIG_PATH"
+
+    if [ "$START_STACK" = "1" ]; then
+      POLICY_CONFIG_PATH="data/policy-config.json" \
+        docker compose up -d >/dev/null 2>&1 || true
+    fi
   fi
+
+  exit "$exit_code"
 }
 trap cleanup EXIT
 
