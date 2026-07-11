@@ -65,7 +65,7 @@ func main() {
 	addr := ":" + port
 	log.Info("service starting", logger.Fields{"addr": addr})
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := httpx.NewServer(addr, handler).ListenAndServe(); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
 }

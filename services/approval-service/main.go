@@ -62,7 +62,7 @@ func main() {
 	addr := ":" + port
 	log.Info("service starting", logger.Fields{"addr": addr})
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := httpx.NewServer(addr, handler).ListenAndServe(); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
 }
@@ -342,8 +342,13 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req domain.ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid approval action payload")
+	if err := httpx.DecodeJSON(
+		w,
+		r,
+		&req,
+		httpx.DefaultMaxJSONBodyBytes,
+	); err != nil {
+		httpx.WriteJSONDecodeError(w, r, err)
 		return
 	}
 	defer r.Body.Close()

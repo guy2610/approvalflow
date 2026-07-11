@@ -49,7 +49,7 @@ func main() {
 	addr := ":" + port
 	log.Info("service starting", logger.Fields{"addr": addr})
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := httpx.NewServer(addr, handler).ListenAndServe(); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
 }
@@ -61,8 +61,13 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req domain.SubmissionRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid submission payload")
+	if err := httpx.DecodeJSON(
+		w,
+		r,
+		&req,
+		httpx.DefaultMaxJSONBodyBytes,
+	); err != nil {
+		httpx.WriteJSONDecodeError(w, r, err)
 		return
 	}
 
@@ -454,6 +459,11 @@ func (s *server) applyApproval(w http.ResponseWriter, r *http.Request, trackingI
 	httpx.WriteJSON(w, http.StatusOK, record)
 }
 
+func decodeJSON(r *http.Request, out any) error {
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(out)
+}
+
 func validateSubmission(req domain.SubmissionRequest) error {
 	if strings.TrimSpace(req.Vendor) == "" {
 		return fmt.Errorf("vendor is required")
@@ -490,15 +500,15 @@ func randomHex(size int) string {
 	return hex.EncodeToString(buf)
 }
 
-func decodeJSON(r *http.Request, out any) error {
-	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(out)
-}
-
 func (s *server) applyAdditionalInfo(w http.ResponseWriter, r *http.Request, trackingID string) {
 	var req domain.AdditionalInfoRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid additional info payload")
+	if err := httpx.DecodeJSON(
+		w,
+		r,
+		&req,
+		httpx.DefaultMaxJSONBodyBytes,
+	); err != nil {
+		httpx.WriteJSONDecodeError(w, r, err)
 		return
 	}
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,7 +48,7 @@ func main() {
 	addr := ":" + port
 	log.Info("service starting", logger.Fields{"addr": addr})
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := httpx.NewServer(addr, handler).ListenAndServe(); err != nil {
 		log.Error("service failed", logger.Fields{"error": err.Error()})
 	}
 }
@@ -60,9 +59,13 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadJSONBody(
+		w,
+		r,
+		httpx.DefaultMaxJSONBodyBytes,
+	)
 	if err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+		httpx.WriteJSONDecodeError(w, r, err)
 		return
 	}
 	defer r.Body.Close()
@@ -97,9 +100,13 @@ func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		body, err := io.ReadAll(r.Body)
+		body, err := httpx.ReadJSONBody(
+			w,
+			r,
+			httpx.DefaultMaxJSONBodyBytes,
+		)
 		if err != nil {
-			httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+			httpx.WriteJSONDecodeError(w, r, err)
 			return
 		}
 		defer r.Body.Close()
@@ -179,9 +186,13 @@ func (s *server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := httpx.ReadJSONBody(
+		w,
+		r,
+		httpx.DefaultMaxJSONBodyBytes,
+	)
 	if err != nil {
-		httpx.WriteError(w, r, http.StatusBadRequest, "failed to read request body")
+		httpx.WriteJSONDecodeError(w, r, err)
 		return
 	}
 	defer r.Body.Close()
