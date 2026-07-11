@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -304,7 +305,7 @@ func (s *server) approve(
 	trackingID string,
 	req domain.ApprovalActionRequest,
 ) {
-	item, record, shouldSaveDecision, ok :=
+	item, record, shouldSaveDecision, etag, ok :=
 		s.loadApprovalForActionOrWriteError(
 			w,
 			r,
@@ -321,18 +322,16 @@ func (s *server) approve(
 		item.ActionReason = req.Reason
 		item.UpdatedAtUTC = time.Now().UTC()
 
-		if err := s.dapr.SaveState(
-			r.Context(),
-			stateStore,
-			approvalKey(trackingID),
-			item,
-		); err != nil {
-			httpx.WriteError(
+		item, record, ok =
+			s.saveApprovalDecisionOrReconcileConflict(
 				w,
 				r,
-				http.StatusInternalServerError,
-				"failed to save approval",
+				trackingID,
+				"approve",
+				item,
+				etag,
 			)
+		if !ok {
 			return
 		}
 	}
@@ -429,7 +428,7 @@ func (s *server) reject(
 	trackingID string,
 	req domain.ApprovalActionRequest,
 ) {
-	item, record, shouldSaveDecision, ok :=
+	item, record, shouldSaveDecision, etag, ok :=
 		s.loadApprovalForActionOrWriteError(
 			w,
 			r,
@@ -446,18 +445,16 @@ func (s *server) reject(
 		item.ActionReason = req.Reason
 		item.UpdatedAtUTC = time.Now().UTC()
 
-		if err := s.dapr.SaveState(
-			r.Context(),
-			stateStore,
-			approvalKey(trackingID),
-			item,
-		); err != nil {
-			httpx.WriteError(
+		item, record, ok =
+			s.saveApprovalDecisionOrReconcileConflict(
 				w,
 				r,
-				http.StatusInternalServerError,
-				"failed to save rejection",
+				trackingID,
+				"reject",
+				item,
+				etag,
 			)
+		if !ok {
 			return
 		}
 	}
@@ -524,7 +521,7 @@ func (s *server) requestInfo(
 	trackingID string,
 	req domain.ApprovalActionRequest,
 ) {
-	item, record, shouldSaveDecision, ok :=
+	item, record, shouldSaveDecision, etag, ok :=
 		s.loadApprovalForActionOrWriteError(
 			w,
 			r,
@@ -541,18 +538,16 @@ func (s *server) requestInfo(
 		item.ActionReason = req.Reason
 		item.UpdatedAtUTC = time.Now().UTC()
 
-		if err := s.dapr.SaveState(
-			r.Context(),
-			stateStore,
-			approvalKey(trackingID),
-			item,
-		); err != nil {
-			httpx.WriteError(
+		item, record, ok =
+			s.saveApprovalDecisionOrReconcileConflict(
 				w,
 				r,
-				http.StatusInternalServerError,
-				"failed to save request-info",
+				trackingID,
+				"request-info",
+				item,
+				etag,
 			)
+		if !ok {
 			return
 		}
 	}
@@ -770,6 +765,80 @@ func approvalEffectEventID(
 	return effect + "_" + item.TrackingID + "_" + version
 }
 
+func (s *server) saveApprovalDecisionOrReconcileConflict(
+	w http.ResponseWriter,
+	r *http.Request,
+	trackingID string,
+	action string,
+	item domain.ApprovalItem,
+	etag string,
+) (
+	domain.ApprovalItem,
+	domain.SubmissionRecord,
+	bool,
+) {
+	err := s.dapr.SaveStateWithETag(
+		r.Context(),
+		stateStore,
+		approvalKey(trackingID),
+		item,
+		etag,
+	)
+	if err == nil {
+		record, loadErr := s.loadSubmissionRecord(r, trackingID)
+		if loadErr != nil {
+			httpx.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"failed to reload submission after approval save",
+			)
+			return domain.ApprovalItem{}, domain.SubmissionRecord{}, false
+		}
+
+		return item, record, true
+	}
+
+	if !errors.Is(err, daprclient.ErrStateConflict) {
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			"failed to save approval decision",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false
+	}
+
+	s.log.Info("approval state write conflict detected; reconciling winner", logger.Fields{
+		"tracking_id":    trackingID,
+		"action":         action,
+		"correlation_id": item.CorrelationID,
+	})
+
+	reloadedItem, reloadedRecord, shouldSaveAgain, _, ok :=
+		s.loadApprovalForActionOrWriteError(
+			w,
+			r,
+			trackingID,
+			action,
+		)
+	if !ok {
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false
+	}
+
+	if shouldSaveAgain {
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusConflict,
+			"approval changed concurrently; retry the action",
+		)
+		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false
+	}
+
+	return reloadedItem, reloadedRecord, true
+}
+
 func (s *server) loadApprovalForActionOrWriteError(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -779,16 +848,26 @@ func (s *server) loadApprovalForActionOrWriteError(
 	domain.ApprovalItem,
 	domain.SubmissionRecord,
 	bool,
+	string,
 	bool,
 ) {
 	desiredStatus, validAction := approvalStatusForAction(action)
 	if !validAction {
-		httpx.WriteError(w, r, http.StatusBadRequest, "unknown approval action")
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"unknown approval action",
+		)
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
 	var item domain.ApprovalItem
-	found, err := s.dapr.GetState(
+	found, etag, err := s.dapr.GetStateWithETag(
 		r.Context(),
 		stateStore,
 		approvalKey(trackingID),
@@ -801,30 +880,51 @@ func (s *server) loadApprovalForActionOrWriteError(
 			http.StatusInternalServerError,
 			"failed to load approval",
 		)
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
 	if !found {
-		httpx.WriteError(w, r, http.StatusNotFound, "approval not found")
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		httpx.WriteError(
+			w,
+			r,
+			http.StatusNotFound,
+			"approval not found",
+		)
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
 	record, err := s.loadSubmissionRecord(r, trackingID)
 	if err != nil {
-		s.log.Error("failed to load submission before approval reconciliation", logger.Fields{
-			"error":           err.Error(),
-			"tracking_id":     trackingID,
-			"action":          action,
-			"approval_status": item.Status,
-			"correlation_id":  item.CorrelationID,
-		})
+		s.log.Error(
+			"failed to load submission before approval reconciliation",
+			logger.Fields{
+				"error":           err.Error(),
+				"tracking_id":     trackingID,
+				"action":          action,
+				"approval_status": item.Status,
+				"correlation_id":  item.CorrelationID,
+			},
+		)
+
 		httpx.WriteError(
 			w,
 			r,
 			http.StatusInternalServerError,
 			"failed to load submission before approval action",
 		)
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
 	if item.Status == domain.ApprovalPending {
@@ -835,52 +935,75 @@ func (s *server) loadApprovalForActionOrWriteError(
 				http.StatusConflict,
 				"approval action rejected because submission is not in HUMAN_REVIEW_REQUIRED state",
 			)
-			return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+			return domain.ApprovalItem{},
+				domain.SubmissionRecord{},
+				false,
+				"",
+				false
 		}
 
-		return item, record, true, true
+		return item, record, true, etag, true
 	}
 
 	if item.Status != desiredStatus {
-		s.log.Info("conflicting approval retry rejected", logger.Fields{
-			"tracking_id":      trackingID,
-			"requested_action": action,
-			"approval_status":  item.Status,
-			"correlation_id":   item.CorrelationID,
-		})
+		s.log.Info(
+			"conflicting approval retry rejected",
+			logger.Fields{
+				"tracking_id":      trackingID,
+				"requested_action": action,
+				"approval_status":  item.Status,
+				"correlation_id":   item.CorrelationID,
+			},
+		)
+
 		httpx.WriteError(
 			w,
 			r,
 			http.StatusConflict,
 			"approval was already completed with a different action",
 		)
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
 	if !canReconcileApprovalAction(action, record.Status) {
-		s.log.Info("approval retry rejected for incompatible submission state", logger.Fields{
-			"tracking_id":       trackingID,
-			"requested_action":  action,
-			"approval_status":   item.Status,
-			"submission_status": record.Status,
-			"correlation_id":    item.CorrelationID,
-		})
+		s.log.Info(
+			"approval retry rejected for incompatible submission state",
+			logger.Fields{
+				"tracking_id":       trackingID,
+				"requested_action":  action,
+				"approval_status":   item.Status,
+				"submission_status": record.Status,
+				"correlation_id":    item.CorrelationID,
+			},
+		)
+
 		httpx.WriteError(
 			w,
 			r,
 			http.StatusConflict,
 			"stored approval action cannot be reconciled with current submission state",
 		)
-		return domain.ApprovalItem{}, domain.SubmissionRecord{}, false, false
+		return domain.ApprovalItem{},
+			domain.SubmissionRecord{},
+			false,
+			"",
+			false
 	}
 
-	s.log.Info("retrying stored approval action", logger.Fields{
-		"tracking_id":       trackingID,
-		"action":            action,
-		"approval_status":   item.Status,
-		"submission_status": record.Status,
-		"correlation_id":    item.CorrelationID,
-	})
+	s.log.Info(
+		"retrying stored approval action",
+		logger.Fields{
+			"tracking_id":       trackingID,
+			"action":            action,
+			"approval_status":   item.Status,
+			"submission_status": record.Status,
+			"correlation_id":    item.CorrelationID,
+		},
+	)
 
-	return item, record, false, true
+	return item, record, false, etag, true
 }

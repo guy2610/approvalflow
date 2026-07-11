@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -100,10 +101,19 @@ func (c *Client) InvokeRaw(ctx context.Context, appID string, method string, htt
 	return res.StatusCode, raw, nil
 }
 
-type stateItem struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
+type stateOptions struct {
+	Concurrency string `json:"concurrency,omitempty"`
+	Consistency string `json:"consistency,omitempty"`
 }
+
+type stateItem struct {
+	Key     string        `json:"key"`
+	Value   any           `json:"value"`
+	ETag    string        `json:"etag,omitempty"`
+	Options *stateOptions `json:"options,omitempty"`
+}
+
+var ErrStateConflict = errors.New("state write conflict")
 
 func (c *Client) PublishEvent(ctx context.Context, pubsubName string, topic string, payload any) error {
 	body, err := json.Marshal(payload)
@@ -175,6 +185,73 @@ func (c *Client) SaveState(ctx context.Context, store string, key string, value 
 	return nil
 }
 
+func (c *Client) SaveStateWithETag(
+	ctx context.Context,
+	store string,
+	key string,
+	value any,
+	etag string,
+) error {
+	if strings.TrimSpace(etag) == "" {
+		return fmt.Errorf("save state with ETag: empty ETag")
+	}
+
+	items := []stateItem{
+		{
+			Key:   key,
+			Value: value,
+			ETag:  etag,
+			Options: &stateOptions{
+				Concurrency: "first-write",
+			},
+		},
+	}
+
+	body, err := json.Marshal(items)
+	if err != nil {
+		return fmt.Errorf("marshal conditional state item: %w", err)
+	}
+
+	stateURL := fmt.Sprintf(
+		"%s/v1.0/state/%s",
+		c.baseURL,
+		url.PathEscape(store),
+	)
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		stateURL,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("create conditional save state request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("conditionally save state key %s: %w", key, err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == http.StatusConflict {
+		return fmt.Errorf("%w: key %s", ErrStateConflict, key)
+	}
+
+	if res.StatusCode >= 400 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf(
+			"conditional save state failed with status %d: %s",
+			res.StatusCode,
+			strings.TrimSpace(string(raw)),
+		)
+	}
+
+	return nil
+}
+
 func (c *Client) GetSecret(ctx context.Context, store string, key string) (string, bool, error) {
 	secretURL := fmt.Sprintf(
 		"%s/v1.0/secrets/%s/%s",
@@ -220,7 +297,12 @@ func (c *Client) GetSecret(ctx context.Context, store string, key string) (strin
 	return value, true, nil
 }
 
-func (c *Client) GetState(ctx context.Context, store string, key string, out any) (bool, error) {
+func (c *Client) GetState(
+	ctx context.Context,
+	store string,
+	key string,
+	out any,
+) (bool, error) {
 	stateURL := fmt.Sprintf(
 		"%s/v1.0/state/%s/%s",
 		c.baseURL,
@@ -228,28 +310,48 @@ func (c *Client) GetState(ctx context.Context, store string, key string, out any
 		url.PathEscape(key),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, stateURL, nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		stateURL,
+		nil,
+	)
 	if err != nil {
-		return false, fmt.Errorf("create get state request: %w", err)
+		return false, fmt.Errorf(
+			"create get state request: %w",
+			err,
+		)
 	}
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("get state key %s: %w", key, err)
+		return false, fmt.Errorf(
+			"get state key %s: %w",
+			key,
+			err,
+		)
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode == http.StatusNoContent || res.StatusCode == http.StatusNotFound {
+	if res.StatusCode == http.StatusNoContent ||
+		res.StatusCode == http.StatusNotFound {
 		return false, nil
 	}
 
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {
-		return false, fmt.Errorf("read state response: %w", err)
+		return false, fmt.Errorf(
+			"read state response: %w",
+			err,
+		)
 	}
 
 	if res.StatusCode >= 400 {
-		return false, fmt.Errorf("get state failed with status %d: %s", res.StatusCode, strings.TrimSpace(string(raw)))
+		return false, fmt.Errorf(
+			"get state failed with status %d: %s",
+			res.StatusCode,
+			strings.TrimSpace(string(raw)),
+		)
 	}
 
 	if len(raw) == 0 || string(raw) == "null" {
@@ -257,10 +359,96 @@ func (c *Client) GetState(ctx context.Context, store string, key string, out any
 	}
 
 	if err := json.Unmarshal(raw, out); err != nil {
-		return false, fmt.Errorf("decode state key %s: %w", key, err)
+		return false, fmt.Errorf(
+			"decode state key %s: %w",
+			key,
+			err,
+		)
 	}
 
 	return true, nil
+}
+
+func (c *Client) GetStateWithETag(
+	ctx context.Context,
+	store string,
+	key string,
+	out any,
+) (bool, string, error) {
+	stateURL := fmt.Sprintf(
+		"%s/v1.0/state/%s/%s",
+		c.baseURL,
+		url.PathEscape(store),
+		url.PathEscape(key),
+	)
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		stateURL,
+		nil,
+	)
+	if err != nil {
+		return false, "", fmt.Errorf(
+			"create get state request: %w",
+			err,
+		)
+	}
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, "", fmt.Errorf(
+			"get state key %s: %w",
+			key,
+			err,
+		)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == http.StatusNoContent ||
+		res.StatusCode == http.StatusNotFound {
+		return false, "", nil
+	}
+
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return false, "", fmt.Errorf(
+			"read state response: %w",
+			err,
+		)
+	}
+
+	if res.StatusCode >= 400 {
+		return false, "", fmt.Errorf(
+			"get state failed with status %d: %s",
+			res.StatusCode,
+			strings.TrimSpace(string(raw)),
+		)
+	}
+
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, "", nil
+	}
+
+	if err := json.Unmarshal(raw, out); err != nil {
+		return false, "", fmt.Errorf(
+			"decode state key %s: %w",
+			key,
+			err,
+		)
+	}
+
+	etag := strings.TrimSpace(res.Header.Get("ETag"))
+	etag = strings.Trim(etag, "\"")
+
+	if etag == "" {
+		return false, "", fmt.Errorf(
+			"get state key %s returned no ETag",
+			key,
+		)
+	}
+
+	return true, etag, nil
 }
 
 // InvokeRawPassthrough invokes another Dapr app and returns the downstream

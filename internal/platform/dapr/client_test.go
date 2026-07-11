@@ -3,6 +3,7 @@ package dapr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -171,5 +172,183 @@ func TestInvokeRawPassthroughPreservesBusinessError(t *testing.T) {
 
 	if !strings.Contains(string(raw), "approval no longer pending") {
 		t.Fatalf("expected downstream body to be preserved, got %s", string(raw))
+	}
+}
+
+func TestGetStateWithETagReturnsDecodedValueAndETag(t *testing.T) {
+	client, server := newTestClient(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+
+		w.Header().Set("ETag", `"42"`)
+		_ = json.NewEncoder(w).Encode(
+			map[string]string{"status": "PENDING"},
+		)
+	})
+	defer server.Close()
+
+	var out map[string]string
+	found, etag, err := client.GetStateWithETag(
+		context.Background(),
+		"statestore",
+		"approval:sub_123",
+		&out,
+	)
+	if err != nil {
+		t.Fatalf("GetStateWithETag returned error: %v", err)
+	}
+
+	if !found {
+		t.Fatalf("expected state to be found")
+	}
+
+	if etag != "42" {
+		t.Fatalf("expected ETag 42, got %q", etag)
+	}
+
+	if out["status"] != "PENDING" {
+		t.Fatalf("unexpected decoded state: %v", out)
+	}
+}
+
+func TestGetStateWithETagRejectsMissingETag(t *testing.T) {
+	client, server := newTestClient(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		_ = json.NewEncoder(w).Encode(
+			map[string]string{"status": "PENDING"},
+		)
+	})
+	defer server.Close()
+
+	var out map[string]string
+	found, etag, err := client.GetStateWithETag(
+		context.Background(),
+		"statestore",
+		"approval:sub_123",
+		&out,
+	)
+
+	if err == nil {
+		t.Fatalf("expected missing ETag error")
+	}
+
+	if found {
+		t.Fatalf("state must not be reported as safely loaded")
+	}
+
+	if etag != "" {
+		t.Fatalf("expected empty ETag, got %q", etag)
+	}
+}
+
+func TestSaveStateWithETagUsesFirstWriteConcurrency(t *testing.T) {
+	client, server := newTestClient(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+
+		var items []struct {
+			Key     string            `json:"key"`
+			Value   map[string]string `json:"value"`
+			ETag    string            `json:"etag"`
+			Options stateOptions      `json:"options"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
+			t.Fatalf("decode state request: %v", err)
+		}
+
+		if len(items) != 1 {
+			t.Fatalf("expected one state item, got %d", len(items))
+		}
+
+		if items[0].Key != "approval:sub_123" {
+			t.Fatalf("unexpected state key: %s", items[0].Key)
+		}
+
+		if items[0].ETag != "42" {
+			t.Fatalf("expected ETag 42, got %q", items[0].ETag)
+		}
+
+		if items[0].Options.Concurrency != "first-write" {
+			t.Fatalf(
+				"expected first-write concurrency, got %q",
+				items[0].Options.Concurrency,
+			)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer server.Close()
+
+	err := client.SaveStateWithETag(
+		context.Background(),
+		"statestore",
+		"approval:sub_123",
+		map[string]string{"status": "APPROVED"},
+		"42",
+	)
+	if err != nil {
+		t.Fatalf("SaveStateWithETag returned error: %v", err)
+	}
+}
+
+func TestSaveStateWithETagMapsConflict(t *testing.T) {
+	client, server := newTestClient(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		http.Error(
+			w,
+			"ETag mismatch",
+			http.StatusConflict,
+		)
+	})
+	defer server.Close()
+
+	err := client.SaveStateWithETag(
+		context.Background(),
+		"statestore",
+		"approval:sub_123",
+		map[string]string{"status": "APPROVED"},
+		"stale-etag",
+	)
+
+	if !errors.Is(err, ErrStateConflict) {
+		t.Fatalf(
+			"expected ErrStateConflict, got %v",
+			err,
+		)
+	}
+}
+
+func TestSaveStateWithETagRejectsEmptyETag(t *testing.T) {
+	client, server := newTestClient(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		t.Fatalf("HTTP request must not be sent for empty ETag")
+	})
+	defer server.Close()
+
+	err := client.SaveStateWithETag(
+		context.Background(),
+		"statestore",
+		"approval:sub_123",
+		map[string]string{"status": "APPROVED"},
+		"",
+	)
+
+	if err == nil {
+		t.Fatalf("expected empty ETag error")
 	}
 }
