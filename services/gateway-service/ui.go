@@ -267,6 +267,11 @@ const indexHTML = `<!doctype html>
       line-height: 1.45;
     }
 
+    #additionalInfoNotes {
+      min-height: 110px;
+      font-family: inherit;
+    }
+
     .button-row {
       display: flex;
       gap: 10px;
@@ -343,6 +348,104 @@ const indexHTML = `<!doctype html>
       align-items: center;
       gap: 12px;
       margin-bottom: 10px;
+    }
+
+    .friendly-output {
+      display: grid;
+      gap: 12px;
+    }
+
+    .output-summary-card {
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .output-summary-card h3 {
+      margin: 0 0 10px;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: normal;
+      font-size: 16px;
+    }
+
+    .output-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .output-field {
+      min-width: 0;
+      border: 1px solid #e2e8f0;
+      background: white;
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .output-field span {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .output-field strong {
+      display: block;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font-size: 14px;
+    }
+
+    .output-field.full-width {
+      grid-column: 1 / -1;
+    }
+
+    .output-message {
+      margin: 0;
+      overflow-wrap: anywhere;
+      color: #334155;
+    }
+
+    .output-message.error {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .output-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .output-tag {
+      border-radius: 999px;
+      padding: 5px 8px;
+      background: #e2e8f0;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .raw-output {
+      margin-top: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+
+    .raw-output summary {
+      cursor: pointer;
+      color: var(--primary);
+      font-weight: 800;
+    }
+
+    .raw-output pre {
+      margin-top: 10px;
     }
 
     .badge {
@@ -430,6 +533,10 @@ const indexHTML = `<!doctype html>
       .two-col {
         grid-template-columns: 1fr;
       }
+
+      .output-grid {
+        grid-template-columns: 1fr;
+      }
     }
         /* Approval queue cards override the global button style. */
       button.approval-item {
@@ -460,6 +567,27 @@ const indexHTML = `<!doctype html>
       button.approval-item.pending:hover {
         border-color: #2456d8;
         background: #f7f9ff;
+      }
+
+      button.approval-item.waiting {
+        cursor: pointer;
+        border-color: #f1c27d;
+        background: #fffbeb;
+      }
+
+      button.approval-item.waiting:hover {
+        border-color: #d97706;
+        background: #fff7d6;
+      }
+
+      button.approval-item.completed {
+        cursor: pointer;
+        background: #f8fafc;
+      }
+
+      button.approval-item.completed:hover {
+        border-color: #94a3b8;
+        background: #f1f5f9;
       }
 
       button.approval-item.selected {
@@ -612,9 +740,11 @@ const indexHTML = `<!doctype html>
     <section class="dashboard-header">
       <div>
         <h2>Controller analytics</h2>
-        <p>Live operational and financial metrics derived from the audit event stream.</p>
+        <p>
+          Live operational and financial metrics derived from the audit event stream.
+          The dashboard refreshes automatically as workflows progress.
+        </p>
       </div>
-      <button class="ghost" onclick="refreshAnalytics()">Refresh analytics</button>
     </section>
 
     <section class="status-grid">
@@ -700,6 +830,67 @@ const indexHTML = `<!doctype html>
           </div>
         </section>
 
+        <section id="additionalInfoPanel" class="panel" hidden>
+          <div class="panel-header">
+            <h2>Additional information requested</h2>
+            <p>
+              This workflow is waiting for the submitter. Supply at least one field
+              to resume deterministic policy evaluation.
+            </p>
+          </div>
+          <div class="panel-body">
+            <div class="mini-card">
+              <strong id="additionalInfoStatus">
+                Waiting for additional information.
+              </strong>
+              <p id="additionalInfoTracking" class="hint">
+                No submission selected.
+              </p>
+            </div>
+
+            <label for="additionalInfoNotes">Updated notes</label>
+            <textarea
+              id="additionalInfoNotes"
+              placeholder="Add business justification, attendee names, or other requested details."
+            ></textarea>
+
+            <div class="two-col">
+              <div>
+                <label for="additionalInfoAttendees">Attendees</label>
+                <input
+                  id="additionalInfoAttendees"
+                  type="number"
+                  min="1"
+                  placeholder="Leave empty for no change"
+                >
+              </div>
+
+              <div>
+                <label for="additionalInfoReceipt">Receipt status</label>
+                <select id="additionalInfoReceipt">
+                  <option value="">No change</option>
+                  <option value="true">Receipt is present</option>
+                  <option value="false">Receipt is not present</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button onclick="submitAdditionalInfo()">
+                Submit additional information
+              </button>
+              <button class="ghost" onclick="getSubmission()">
+                Refresh workflow status
+              </button>
+            </div>
+
+            <p class="hint">
+              After submission, the revision number increases and the workflow returns
+              to policy evaluation. It may complete automatically or return to human review.
+            </p>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-header">
             <h2>Human approvals</h2>
@@ -711,7 +902,7 @@ const indexHTML = `<!doctype html>
             </div>
 
             <div class="approval-toolbar">
-              <span id="approvalSummary" class="hint">No approval data loaded yet.</span>
+              <span id="approvalSummary" class="hint">Approval queue not loaded.</span>
 
               <label class="approval-history-toggle">
                 <input
@@ -719,13 +910,17 @@ const indexHTML = `<!doctype html>
                   type="checkbox"
                   onchange="renderCurrentApprovals()"
                 >
-                Show completed
+                Completed only
               </label>
             </div>
 
             <div id="approvalList" class="approval-list">
-              <p class="hint">No approval data loaded yet.</p>
+              <p class="hint">Refresh approvals to load items.</p>
             </div>
+
+            <p id="approvalSelectionHint" class="hint">
+              Select a pending item to approve, reject, or request additional information.
+            </p>
 
             <div class="two-col">
               <div>
@@ -772,7 +967,19 @@ const indexHTML = `<!doctype html>
           </div>
         </div>
         <div class="panel-body">
-          <pre id="output">Ready.</pre>
+          <div id="friendlyOutput" class="friendly-output">
+            <div class="output-summary-card">
+              <h3>Ready</h3>
+              <p class="output-message">
+                Submit an invoice or load workflow data to inspect the result.
+              </p>
+            </div>
+          </div>
+
+          <details id="rawOutputDetails" class="raw-output">
+            <summary>Show raw response</summary>
+            <pre id="output">Ready.</pre>
+          </details>
         </div>
       </aside>
     </section>
@@ -881,14 +1088,320 @@ function setMeta(result, label) {
   }
 }
 
+function addOutputField(container, label, value) {
+  if (value === undefined || value === null || value === "") {
+    return;
+  }
+
+  const field = document.createElement("div");
+  field.className = "output-field";
+
+  const fieldLabel = document.createElement("span");
+  fieldLabel.textContent = label;
+
+  const fieldValue = document.createElement("strong");
+
+  if (typeof value === "number") {
+    fieldValue.textContent = String(value);
+  } else if (typeof value === "boolean") {
+    fieldValue.textContent = value ? "Yes" : "No";
+  } else {
+    fieldValue.textContent = String(value);
+  }
+
+  field.appendChild(fieldLabel);
+  field.appendChild(fieldValue);
+  container.appendChild(field);
+}
+
+function addOutputTags(container, values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return;
+  }
+
+  const tags = document.createElement("div");
+  tags.className = "output-tags";
+
+  values.forEach(value => {
+    const tag = document.createElement("span");
+    tag.className = "output-tag";
+    tag.textContent = String(value);
+    tags.appendChild(tag);
+  });
+
+  container.appendChild(tags);
+}
+
+function createOutputCard(title) {
+  const card = document.createElement("div");
+  card.className = "output-summary-card";
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+
+  card.appendChild(heading);
+  return card;
+}
+
+function renderResponseMetadata(container, result) {
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  addOutputField(grid, "HTTP status", result.status);
+  addOutputField(grid, "Status text", result.statusText);
+  addOutputField(grid, "Correlation ID", result.correlationId);
+  addOutputField(grid, "Rate limit", result.rateLimit);
+  addOutputField(grid, "Remaining", result.rateLimitRemaining);
+
+  if (grid.children.length > 0) {
+    container.appendChild(grid);
+  }
+}
+
+function renderSubmissionSummary(container, payload) {
+  const card = createOutputCard("Workflow status");
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  addOutputField(
+    grid,
+    "Invoice",
+    payload.original_invoice_id || payload.invoice_id
+  );
+  addOutputField(grid, "Tracking ID", payload.tracking_id);
+  addOutputField(grid, "Status", payload.status);
+  addOutputField(grid, "Revision", payload.revision_number);
+  addOutputField(grid, "Duplicate", payload.duplicate);
+  addOutputField(grid, "Updated", payload.updated_at_utc);
+
+  if (payload.request) {
+    addOutputField(grid, "Vendor", payload.request.vendor);
+    addOutputField(grid, "Amount", payload.request.total);
+    addOutputField(grid, "Currency", payload.request.currency);
+    addOutputField(grid, "Category", payload.request.category);
+  } else {
+    addOutputField(grid, "Amount", payload.amount_usd);
+  }
+
+  card.appendChild(grid);
+
+  if (payload.reason) {
+    const reasonField = document.createElement("div");
+    reasonField.className = "output-field full-width";
+
+    const reasonLabel = document.createElement("span");
+    reasonLabel.textContent = "Reason";
+
+    const reasonValue = document.createElement("strong");
+    reasonValue.textContent = payload.reason;
+
+    reasonField.appendChild(reasonLabel);
+    reasonField.appendChild(reasonValue);
+    grid.appendChild(reasonField);
+  }
+
+  addOutputTags(card, payload.violations);
+  container.appendChild(card);
+}
+
+function renderApprovalListSummary(container, payload) {
+  const items = Array.isArray(payload.items) ? payload.items : [];
+
+  const pending = items.filter(item => item.status === "PENDING").length;
+  const waiting = items.filter(
+    item => item.status === "REQUEST_INFO"
+  ).length;
+  const completed = items.filter(
+    item => item.status === "APPROVED" || item.status === "REJECTED"
+  ).length;
+
+  const card = createOutputCard("Approval queue");
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  addOutputField(grid, "Total items", items.length);
+  addOutputField(grid, "Pending review", pending);
+  addOutputField(grid, "Waiting for submitter", waiting);
+  addOutputField(grid, "Completed", completed);
+
+  card.appendChild(grid);
+  container.appendChild(card);
+}
+
+function renderAnalyticsSummary(container, payload) {
+  const card = createOutputCard("Controller analytics");
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  addOutputField(grid, "Total submissions", payload.total_submissions);
+  addOutputField(grid, "Completed", payload.completed_submissions);
+  addOutputField(grid, "Auto-approved", payload.auto_approved_count);
+  addOutputField(grid, "Human review", payload.human_review_count);
+  addOutputField(grid, "Rejected", payload.rejected_count);
+  addOutputField(grid, "Payment failed", payload.payment_failed_count);
+  addOutputField(
+    grid,
+    "Auto-approved amount",
+    formatUSD(payload.auto_approved_amount_usd)
+  );
+  addOutputField(
+    grid,
+    "Human-approved amount",
+    formatUSD(payload.human_approved_amount_usd)
+  );
+
+  card.appendChild(grid);
+  container.appendChild(card);
+}
+
+function renderAuditSummary(container, payload) {
+  const events = Array.isArray(payload.events)
+    ? payload.events
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  const card = createOutputCard("Audit trail");
+
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  addOutputField(grid, "Events", events.length);
+
+  if (events.length > 0) {
+    const first = events[0];
+    const last = events[events.length - 1];
+
+    addOutputField(grid, "First action", first.action || first.event_type);
+    addOutputField(grid, "Latest action", last.action || last.event_type);
+    addOutputField(grid, "Latest outcome", last.outcome);
+    addOutputField(grid, "Latest time", last.occurred_at_utc);
+  }
+
+  card.appendChild(grid);
+  container.appendChild(card);
+}
+
+function renderGenericPayload(container, payload) {
+  const card = createOutputCard("Response details");
+  const grid = document.createElement("div");
+  grid.className = "output-grid";
+
+  Object.entries(payload || {})
+    .filter(([, value]) =>
+      value === null ||
+      ["string", "number", "boolean"].includes(typeof value)
+    )
+    .slice(0, 10)
+    .forEach(([key, value]) => {
+      addOutputField(
+        grid,
+        key.replaceAll("_", " "),
+        value
+      );
+    });
+
+  if (grid.children.length > 0) {
+    card.appendChild(grid);
+  } else {
+    const message = document.createElement("p");
+    message.className = "output-message";
+    message.textContent =
+      "The response is available in the raw response section.";
+    card.appendChild(message);
+  }
+
+  container.appendChild(card);
+}
+
+function renderFriendlyOutput(value, label) {
+  const container = document.getElementById("friendlyOutput");
+  container.innerHTML = "";
+
+  if (typeof value === "string") {
+    const card = createOutputCard(label || "Message");
+    const message = document.createElement("p");
+
+    message.className =
+      "output-message" +
+      (label && label.toLowerCase().includes("fail") ? " error" : "");
+
+    message.textContent = value;
+    card.appendChild(message);
+    container.appendChild(card);
+    return;
+  }
+
+  const result = value || {};
+  const payload = result.payload || {};
+
+  const metadataCard = createOutputCard(label || "Operation result");
+  renderResponseMetadata(metadataCard, result);
+  container.appendChild(metadataCard);
+
+  if (payload.error) {
+    const errorCard = createOutputCard("Request failed");
+    const message = document.createElement("p");
+    message.className = "output-message error";
+    message.textContent = payload.error;
+    errorCard.appendChild(message);
+    container.appendChild(errorCard);
+    return;
+  }
+
+  if (
+    payload.tracking_id &&
+    (
+      payload.status ||
+      payload.invoice_id ||
+      payload.original_invoice_id
+    )
+  ) {
+    renderSubmissionSummary(container, payload);
+    return;
+  }
+
+  if (Array.isArray(payload.items)) {
+    renderApprovalListSummary(container, payload);
+    return;
+  }
+
+  if (
+    payload.total_submissions !== undefined ||
+    payload.auto_approved_count !== undefined
+  ) {
+    renderAnalyticsSummary(container, payload);
+    return;
+  }
+
+  if (
+    Array.isArray(payload.events) ||
+    payload.correlation_id && Array.isArray(payload.audit_events)
+  ) {
+    renderAuditSummary(container, payload);
+    return;
+  }
+
+  renderGenericPayload(container, payload);
+}
+
 function output(value, label) {
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const text =
+    typeof value === "string"
+      ? value
+      : JSON.stringify(value, null, 2);
+
   document.getElementById("output").textContent = text;
+  renderFriendlyOutput(value, label);
+
   if (typeof value === "object") {
     setMeta(value, label);
   } else {
-    document.getElementById("lastStatus").textContent = label || "Message";
+    document.getElementById("lastStatus").textContent =
+      label || "Message";
   }
+
+  document.getElementById("rawOutputDetails").open = false;
 }
 
 function headers(correlationId, role) {
@@ -941,6 +1454,55 @@ function formatJSON() {
   }
 }
 
+let submissionPollGeneration = 0;
+
+function startSubmissionPolling(trackingId) {
+  submissionPollGeneration += 1;
+  const generation = submissionPollGeneration;
+
+  const inProgressStatuses = new Set([
+    "ACCEPTED",
+    "PROCESSING",
+    "AUTO_APPROVED_PENDING_PAYMENT",
+    "PAYMENT_PENDING"
+  ]);
+
+  let attempts = 0;
+
+  async function poll() {
+    if (generation !== submissionPollGeneration) {
+      return;
+    }
+
+    attempts += 1;
+
+    document.getElementById("trackingId").value = trackingId;
+    const record = await getSubmission();
+
+    if (!record) {
+      return;
+    }
+
+    if (!inProgressStatuses.has(record.status)) {
+      await listApprovals();
+      await refreshAnalytics();
+      return;
+    }
+
+    if (attempts >= 20) {
+      output(
+        "Automatic status polling stopped after 20 attempts. Use Get status to continue.",
+        "Polling paused"
+      );
+      return;
+    }
+
+    window.setTimeout(poll, 1200);
+  }
+
+  window.setTimeout(poll, 700);
+}
+
 async function submitInvoice() {
   try {
     const correlationId = document.getElementById("correlationId").value;
@@ -955,35 +1517,189 @@ async function submitInvoice() {
 
     const result = await parseResponse(response);
     if (result.payload && result.payload.tracking_id) {
-      document.getElementById("trackingId").value = result.payload.tracking_id;
+      const trackingId = result.payload.tracking_id;
+
+      document.getElementById("trackingId").value = trackingId;
       document.getElementById("auditCorrelationId").value = correlationId;
+
+      output(result, "Submitted");
+      startSubmissionPolling(trackingId);
+      return;
     }
+
     output(result, "Submitted");
   } catch (err) {
     output("Submit failed: " + err.message, "Submit failed");
   }
 }
 
+let currentSubmissionRecord = null;
+
+function updateAdditionalInfoPanel(record) {
+  const panel = document.getElementById("additionalInfoPanel");
+  const status = document.getElementById("additionalInfoStatus");
+  const tracking = document.getElementById("additionalInfoTracking");
+
+  currentSubmissionRecord = record || null;
+
+  if (!record || record.status !== "INFO_REQUESTED") {
+    panel.hidden = true;
+    return;
+  }
+
+  panel.hidden = false;
+
+  status.textContent =
+    "Additional information is required before this workflow can continue.";
+
+  tracking.textContent =
+    (record.original_invoice_id || "Unknown invoice") +
+    " · " +
+    (record.tracking_id || "No tracking ID") +
+    " · Revision " +
+    Number(record.revision_number || 0);
+
+  const request = record.request || {};
+
+  document.getElementById("additionalInfoNotes").value =
+    request.notes || "";
+
+  document.getElementById("additionalInfoAttendees").value =
+    request.attendees || "";
+
+  document.getElementById("additionalInfoReceipt").value = "";
+}
+
 async function getSubmission() {
   try {
     const trackingId = document.getElementById("trackingId").value.trim();
+
+    if (!trackingId) {
+      output("Missing tracking ID.", "Missing input");
+      updateAdditionalInfoPanel(null);
+      return null;
+    }
+
+    const response = await fetch(
+      "/submissions/" + encodeURIComponent(trackingId),
+      {
+        method: "GET",
+        headers: headers("ui-status-" + trackingId)
+      }
+    );
+
+    const result = await parseResponse(response);
+    output(result, "Status fetched");
+
+    if (result.status >= 200 && result.status < 300) {
+      const record = result.payload || null;
+      updateAdditionalInfoPanel(record);
+
+      if (record && record.correlation_id) {
+        document.getElementById("auditCorrelationId").value =
+          record.correlation_id;
+      }
+
+      return record;
+    }
+
+    updateAdditionalInfoPanel(null);
+    return null;
+  } catch (err) {
+    updateAdditionalInfoPanel(null);
+    output("Get submission failed: " + err.message, "Request failed");
+    return null;
+  }
+}
+
+async function submitAdditionalInfo() {
+  try {
+    const trackingId =
+      document.getElementById("trackingId").value.trim();
+
     if (!trackingId) {
       output("Missing tracking ID.", "Missing input");
       return;
     }
 
-    const response = await fetch("/submissions/" + encodeURIComponent(trackingId), {
-      method: "GET",
-      headers: headers("ui-status-" + trackingId)
-    });
+    const notes =
+      document.getElementById("additionalInfoNotes").value.trim();
 
-    output(await parseResponse(response), "Status fetched");
+    const attendeesRaw =
+      document.getElementById("additionalInfoAttendees").value.trim();
+
+    const receiptRaw =
+      document.getElementById("additionalInfoReceipt").value;
+
+    const payload = {};
+
+    if (notes) {
+      payload.notes = notes;
+    }
+
+    if (attendeesRaw) {
+      const attendees = Number(attendeesRaw);
+
+      if (!Number.isInteger(attendees) || attendees <= 0) {
+        output(
+          "Attendees must be a positive whole number.",
+          "Invalid additional information"
+        );
+        return;
+      }
+
+      payload.attendees = attendees;
+    }
+
+    if (receiptRaw === "true") {
+      payload.receiptPresent = true;
+    } else if (receiptRaw === "false") {
+      payload.receiptPresent = false;
+    }
+
+    if (Object.keys(payload).length === 0) {
+      output(
+        "Provide notes, attendees, or a receipt status before submitting.",
+        "Missing additional information"
+      );
+      return;
+    }
+
+    const response = await fetch(
+      "/submissions/" +
+        encodeURIComponent(trackingId) +
+        "/additional-info",
+      {
+        method: "POST",
+        headers: headers(
+          "ui-additional-info-" + trackingId
+        ),
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const result = await parseResponse(response);
+    output(result, "Additional information submitted");
+
+    if (result.status >= 200 && result.status < 300) {
+      updateAdditionalInfoPanel(null);
+
+      document.getElementById("additionalInfoNotes").value = "";
+      document.getElementById("additionalInfoAttendees").value = "";
+      document.getElementById("additionalInfoReceipt").value = "";
+
+      startSubmissionPolling(trackingId);
+    }
   } catch (err) {
-    output("Get submission failed: " + err.message, "Request failed");
+    output(
+      "Additional-information submission failed: " + err.message,
+      "Request failed"
+    );
   }
 }
 
 let currentApprovalItems = [];
+let selectedApprovalTrackingId = "";
 
 function renderCurrentApprovals() {
   renderApprovals(currentApprovalItems);
@@ -995,14 +1711,74 @@ function setApprovalActionsEnabled(enabled) {
   document.getElementById("requestInfoButton").disabled = !enabled;
 }
 
-function selectApproval(trackingId) {
-  document.getElementById("approvalTrackingId").value = trackingId;
-  setApprovalActionsEnabled(true);
+function approvalStatusLabel(status) {
+  if (status === "PENDING") {
+    return "Pending review";
+  }
 
-  document.querySelectorAll(".approval-item").forEach(item => {
-    item.classList.toggle(
+  if (status === "REQUEST_INFO") {
+    return "Waiting for submitter";
+  }
+
+  if (status === "APPROVED") {
+    return "Approved";
+  }
+
+  if (status === "REJECTED") {
+    return "Rejected";
+  }
+
+  return status || "Unknown";
+}
+
+function selectApproval(trackingId) {
+  const item = currentApprovalItems.find(
+    candidate => candidate.tracking_id === trackingId
+  );
+
+  if (!item) {
+    selectedApprovalTrackingId = "";
+    document.getElementById("approvalTrackingId").value = "";
+    setApprovalActionsEnabled(false);
+    document.getElementById("approvalSelectionHint").textContent =
+      "Select an approval item to inspect it.";
+    return;
+  }
+
+  selectedApprovalTrackingId = trackingId;
+  document.getElementById("approvalTrackingId").value = trackingId;
+
+  if (item.correlation_id) {
+    document.getElementById("auditCorrelationId").value =
+      item.correlation_id;
+  }
+
+  const isPending = item.status === "PENDING";
+  setApprovalActionsEnabled(isPending);
+
+  const hint = document.getElementById("approvalSelectionHint");
+
+  if (isPending) {
+    hint.textContent =
+      "Selected " +
+      (item.invoice_id || trackingId) +
+      ". Choose Approve, Reject, or Request info.";
+  } else if (item.status === "REQUEST_INFO") {
+    hint.textContent =
+      "This workflow is waiting for the submitter to provide additional information. " +
+      "Approval actions will become available only if the updated revision returns to human review.";
+
+    document.getElementById("trackingId").value = trackingId;
+    void getSubmission();
+  } else {
+    hint.textContent =
+      "This approval item is complete and is available for inspection only.";
+  }
+
+  document.querySelectorAll(".approval-item").forEach(element => {
+    element.classList.toggle(
       "selected",
-      item.dataset.trackingId === trackingId
+      element.dataset.trackingId === trackingId
     );
   });
 }
@@ -1011,49 +1787,66 @@ function renderApprovals(items) {
   const container = document.getElementById("approvalList");
   const trackingInput = document.getElementById("approvalTrackingId");
   const summary = document.getElementById("approvalSummary");
+  const selectionHint = document.getElementById("approvalSelectionHint");
   const showCompleted =
     document.getElementById("showCompletedApprovals").checked;
 
   const approvals = Array.isArray(items) ? items : [];
-  const openItems = approvals.filter(item =>
-    item.status === "PENDING" || item.status === "REQUEST_INFO"
+  const pendingItems = approvals.filter(item =>
+    item.status === "PENDING"
+  );
+  const waitingItems = approvals.filter(item =>
+    item.status === "REQUEST_INFO"
   );
   const completedItems = approvals.filter(item =>
     item.status === "APPROVED" || item.status === "REJECTED"
   );
+
+  const activeItems = [...pendingItems, ...waitingItems];
   const visibleItems = showCompleted
-    ? [...openItems, ...completedItems]
-    : openItems;
+    ? completedItems
+    : activeItems;
 
   currentApprovalItems = approvals;
-
   container.innerHTML = "";
-  trackingInput.value = "";
-  setApprovalActionsEnabled(false);
 
   summary.textContent =
-    openItems.length +
-    " open · " +
+    pendingItems.length +
+    " pending review · " +
+    waitingItems.length +
+    " waiting for submitter · " +
     completedItems.length +
     " completed";
 
   if (visibleItems.length === 0) {
     container.innerHTML = showCompleted
       ? '<p class="hint approval-empty">No approval items found.</p>'
-      : '<p class="hint approval-empty">No open approvals. Enable "Show completed" to view history.</p>';
+      : '<p class="hint approval-empty">No active approvals. Enable "Show completed" to view history.</p>';
+
+    selectedApprovalTrackingId = "";
+    trackingInput.value = "";
+    setApprovalActionsEnabled(false);
+    selectionHint.textContent =
+      "No selectable approval item is currently displayed.";
     return;
   }
 
   visibleItems.forEach(item => {
     const button = document.createElement("button");
     const isPending = item.status === "PENDING";
-    const isOpen = isPending || item.status === "REQUEST_INFO";
+    const isWaiting = item.status === "REQUEST_INFO";
+    const isCompleted =
+      item.status === "APPROVED" || item.status === "REJECTED";
 
     button.type = "button";
     button.className =
-      "approval-item" + (isPending ? " pending" : "");
+      "approval-item" +
+      (isPending ? " pending" : "") +
+      (isWaiting ? " waiting" : "") +
+      (isCompleted ? " completed" : "");
+
     button.dataset.trackingId = item.tracking_id || "";
-    button.disabled = !isPending;
+    button.disabled = false;
 
     const header = document.createElement("div");
     header.className = "approval-item-header";
@@ -1064,22 +1857,39 @@ function renderApprovals(items) {
     const status = document.createElement("span");
     status.className =
       "badge" +
-      (isPending
+      (isPending || isWaiting
         ? " warning"
         : item.status === "REJECTED"
           ? " danger"
-          : "");
-    status.textContent = item.status || "UNKNOWN";
+          : " success");
+
+    status.textContent = approvalStatusLabel(item.status);
 
     header.appendChild(invoice);
     header.appendChild(status);
 
     const tracking = document.createElement("div");
     tracking.className = "approval-item-meta";
+
+    const revision = Number(item.revision_number || 0);
+
     tracking.textContent =
       (item.tracking_id || "No tracking ID") +
       " · $" +
-      Number(item.amount_usd || 0).toFixed(2);
+      Number(item.amount_usd || 0).toFixed(2) +
+      " · Revision " +
+      revision;
+
+    const violations = document.createElement("div");
+    violations.className = "approval-item-meta";
+
+    const violationList = Array.isArray(item.violations)
+      ? item.violations
+      : [];
+
+    violations.textContent = violationList.length > 0
+      ? "Policy: " + violationList.join(", ")
+      : "No policy violations listed.";
 
     const reason = document.createElement("div");
     reason.className = "approval-item-meta";
@@ -1087,24 +1897,33 @@ function renderApprovals(items) {
 
     button.appendChild(header);
     button.appendChild(tracking);
+    button.appendChild(violations);
     button.appendChild(reason);
 
-    if (isPending) {
-      button.addEventListener("click", () => {
-        selectApproval(item.tracking_id);
-      });
-    } else if (isOpen) {
-      button.title =
-        "This item is waiting for additional information and cannot be actioned yet.";
-    }
+    button.addEventListener("click", () => {
+      selectApproval(item.tracking_id);
+    });
 
     container.appendChild(button);
   });
 
-  const firstPending = openItems.find(item => item.status === "PENDING");
+  const selectedIsVisible = visibleItems.some(
+    item => item.tracking_id === selectedApprovalTrackingId
+  );
 
-  if (firstPending && firstPending.tracking_id) {
-    selectApproval(firstPending.tracking_id);
+  if (selectedIsVisible) {
+    selectApproval(selectedApprovalTrackingId);
+  } else {
+    selectedApprovalTrackingId = "";
+    trackingInput.value = "";
+    setApprovalActionsEnabled(false);
+
+    document.querySelectorAll(".approval-item").forEach(element => {
+      element.classList.remove("selected");
+    });
+
+    selectionHint.textContent =
+      "Select a pending item to approve, reject, or request additional information.";
   }
 }
 
@@ -1159,7 +1978,13 @@ async function approvalAction(action) {
     output(result, "Approval action");
 
     if (result.status >= 200 && result.status < 300) {
+      if (action === "request-info") {
+        document.getElementById("trackingId").value = trackingId;
+        await getSubmission();
+      }
+
       await listApprovals();
+      await refreshAnalytics();
     }
   } catch (err) {
     output("Approval action failed: " + err.message, "Request failed");
