@@ -37,6 +37,8 @@ Start the complete local environment:
 docker compose up --build -d
 ```
 
+Because each application container shares its network namespace with a Dapr sidecar, avoid restarting only the application containers with `docker compose restart <service>`. A partial restart can leave the associated sidecar attached to the old network namespace. Use a full `docker compose down` followed by `docker compose up -d` for a clean local restart.
+
 A normal shutdown preserves PostgreSQL and Redis state in named Docker volumes:
 
 ```bash
