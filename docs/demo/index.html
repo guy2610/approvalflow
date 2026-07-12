@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta
+    name="description"
+    content="Interactive static portfolio simulation of ApprovalFlow."
+  >
+  <title>ApprovalFlow Interactive Demo</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <a class="back-link" href="../">← ApprovalFlow overview</a>
+        <span class="eyebrow">Static portfolio simulation</span>
+        <h1>ApprovalFlow demo</h1>
+        <p>
+          Explore automatic approval, human review, request-info, revision,
+          payment, analytics, and audit behavior without running backend services.
+        </p>
+      </div>
+    </header>
+
+    <section class="notice">
+      <strong>No backend services are running on this page.</strong>
+      All workflow state and transitions are simulated locally in the browser.
+      The complete implementation runs through Docker Compose in the repository.
+    </section>
+
+    <section class="scenario-panel panel">
+      <div class="panel-header">
+        <div>
+          <h2>Select a workflow</h2>
+          <p>Start a new simulated invoice journey.</p>
+        </div>
+
+        <button class="ghost" id="resetButton">
+          Reset demo
+        </button>
+      </div>
+
+      <div class="scenario-grid">
+        <button class="scenario-card" data-scenario="auto">
+          <span class="scenario-label success">Automatic</span>
+          <strong>Low-value team lunch</strong>
+          <span>$42 · known vendor · receipt present</span>
+          <small>Expected result: PAID automatically</small>
+        </button>
+
+        <button class="scenario-card" data-scenario="review">
+          <span class="scenario-label warning">Human review</span>
+          <strong>High-value client dinner</strong>
+          <span>$1,820 · policy violations</span>
+          <small>Expected result: approver decision required</small>
+        </button>
+
+        <button class="scenario-card" data-scenario="request-info">
+          <span class="scenario-label info">Request info</span>
+          <strong>Incomplete client dinner</strong>
+          <span>$1,820 · missing business context</span>
+          <small>Expected result: revision 2 after new information</small>
+        </button>
+      </div>
+    </section>
+
+    <section class="metrics-grid">
+      <article class="metric-card">
+        <strong id="metricTotal">0</strong>
+        <span>Total submissions</span>
+      </article>
+
+      <article class="metric-card">
+        <strong id="metricCompleted">0</strong>
+        <span>Completed</span>
+      </article>
+
+      <article class="metric-card">
+        <strong id="metricPending">0</strong>
+        <span>Pending review</span>
+      </article>
+
+      <article class="metric-card">
+        <strong id="metricWaiting">0</strong>
+        <span>Waiting for submitter</span>
+      </article>
+
+      <article class="metric-card">
+        <strong id="metricApprovedAmount">$0.00</strong>
+        <span>Approved amount</span>
+      </article>
+
+      <article class="metric-card">
+        <strong id="metricRejected">0</strong>
+        <span>Rejected</span>
+      </article>
+    </section>
+
+    <section class="main-grid">
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Workflow status</h2>
+              <p>Current state of the selected submission.</p>
+            </div>
+
+            <span id="workflowBadge" class="badge neutral">
+              Not started
+            </span>
+          </div>
+
+          <div class="panel-body">
+            <div id="workflowEmpty" class="empty-state">
+              Select a scenario to begin.
+            </div>
+
+            <div id="workflowContent" hidden>
+              <div class="detail-grid">
+                <div class="detail-field">
+                  <span>Invoice</span>
+                  <strong id="invoiceId">—</strong>
+                </div>
+
+                <div class="detail-field">
+                  <span>Tracking ID</span>
+                  <strong id="trackingId">—</strong>
+                </div>
+
+                <div class="detail-field">
+                  <span>Vendor</span>
+                  <strong id="vendor">—</strong>
+                </div>
+
+                <div class="detail-field">
+                  <span>Amount</span>
+                  <strong id="amount">—</strong>
+                </div>
+
+                <div class="detail-field">
+                  <span>Status</span>
+                  <strong id="submissionStatus">—</strong>
+                </div>
+
+                <div class="detail-field">
+                  <span>Revision</span>
+                  <strong id="revision">—</strong>
+                </div>
+
+                <div class="detail-field full-width">
+                  <span>Reason</span>
+                  <strong id="reason">—</strong>
+                </div>
+              </div>
+
+              <div class="button-row">
+                <button id="advanceButton">
+                  Advance workflow
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="approvalPanel" class="panel" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Human approval</h2>
+              <p>Select an explicit action for this approval item.</p>
+            </div>
+
+            <span id="approvalBadge" class="badge warning">
+              Pending review
+            </span>
+          </div>
+
+          <div class="panel-body">
+            <div class="detail-grid">
+              <div class="detail-field">
+                <span>Invoice</span>
+                <strong id="approvalInvoice">—</strong>
+              </div>
+
+              <div class="detail-field">
+                <span>Amount</span>
+                <strong id="approvalAmount">—</strong>
+              </div>
+
+              <div class="detail-field">
+                <span>Revision</span>
+                <strong id="approvalRevision">—</strong>
+              </div>
+
+              <div class="detail-field">
+                <span>Agent recommendation</span>
+                <strong id="agentRecommendation">—</strong>
+              </div>
+
+              <div class="detail-field full-width">
+                <span>Policy violations</span>
+                <strong id="violations">—</strong>
+              </div>
+            </div>
+
+            <label for="approvalReason">Human decision reason</label>
+            <input
+              id="approvalReason"
+              value="Reviewed in the static portfolio demo."
+            >
+
+            <div class="button-row">
+              <button id="approveButton">Approve</button>
+              <button id="rejectButton" class="danger">Reject</button>
+              <button id="requestInfoButton" class="secondary">
+                Request info
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section id="additionalInfoPanel" class="panel" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Additional information requested</h2>
+              <p>
+                The workflow is waiting for the submitter before it can continue.
+              </p>
+            </div>
+
+            <span class="badge info">
+              Waiting for submitter
+            </span>
+          </div>
+
+          <div class="panel-body">
+            <label for="additionalNotes">Updated notes</label>
+            <textarea id="additionalNotes">
+Client dinner with Acme representatives. The meeting concerned the Q3 integration agreement.
+            </textarea>
+
+            <div class="two-col">
+              <div>
+                <label for="additionalAttendees">Attendees</label>
+                <input id="additionalAttendees" type="number" min="1" value="8">
+              </div>
+
+              <div>
+                <label for="additionalReceipt">Receipt status</label>
+                <select id="additionalReceipt">
+                  <option value="true">Receipt is present</option>
+                  <option value="false">Receipt is not present</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button id="submitAdditionalInfoButton">
+                Submit additional information
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="panel timeline-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Audit timeline</h2>
+            <p>Simulated correlation-aware workflow events.</p>
+          </div>
+        </div>
+
+        <div class="panel-body">
+          <ol id="timeline" class="timeline">
+            <li class="timeline-empty">
+              Workflow events will appear here.
+            </li>
+          </ol>
+        </div>
+      </aside>
+    </section>
+
+    <section class="boundary">
+      <strong>Static demonstration boundary</strong>
+      This page demonstrates interaction and product behavior only. Reliability
+      mechanisms such as Dapr pub/sub, Redis/PostgreSQL persistence, optimistic
+      concurrency, stale-event rejection, and payment idempotency are implemented
+      in the repository, not inside this browser simulation.
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
