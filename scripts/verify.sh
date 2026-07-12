@@ -64,7 +64,11 @@ fixture() {
   local invoice_id="$1"
   local out="$TMP_DIR/${invoice_id}.json"
 
-  jq --arg id "$invoice_id" '.fixtures[] | select(.id == $id)' data/sample-invoices.json > "$out"
+  jq --arg id "$invoice_id" '
+    .fixtures[]
+    | select(.id == $id)
+    | del(.scenario, .expected)
+  ' data/sample-invoices.json > "$out"
 
   if [ ! -s "$out" ] || [ "$(cat "$out")" = "null" ]; then
     fail "fixture not found: $invoice_id"
