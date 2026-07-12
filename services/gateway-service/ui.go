@@ -1464,6 +1464,7 @@ function startSubmissionPolling(trackingId) {
     "ACCEPTED",
     "PROCESSING",
     "AUTO_APPROVED_PENDING_PAYMENT",
+    "APPROVED_BY_HUMAN",
     "PAYMENT_PENDING"
   ]);
 
@@ -1484,8 +1485,8 @@ function startSubmissionPolling(trackingId) {
     }
 
     if (!inProgressStatuses.has(record.status)) {
-      await listApprovals();
-      await refreshAnalytics();
+      await listApprovals(false);
+      await refreshAnalytics(false);
       return;
     }
 
@@ -1927,7 +1928,7 @@ function renderApprovals(items) {
   }
 }
 
-async function listApprovals() {
+async function listApprovals(showOutput = true) {
   try {
     const response = await fetch("/approvals", {
       method: "GET",
@@ -1948,10 +1949,17 @@ async function listApprovals() {
       renderApprovals([]);
     }
 
-    output(result, "Approvals fetched");
+    if (showOutput) {
+      output(result, "Approvals fetched");
+    }
   } catch (err) {
     renderApprovals([]);
-    output("List approvals failed: " + err.message, "Request failed");
+
+    if (showOutput) {
+      output("List approvals failed: " + err.message, "Request failed");
+    } else {
+      console.warn("Automatic approval refresh failed:", err);
+    }
   }
 }
 
@@ -1978,13 +1986,16 @@ async function approvalAction(action) {
     output(result, "Approval action");
 
     if (result.status >= 200 && result.status < 300) {
-      if (action === "request-info") {
-        document.getElementById("trackingId").value = trackingId;
+      document.getElementById("trackingId").value = trackingId;
+
+      if (action === "approve") {
+        startSubmissionPolling(trackingId);
+      } else {
         await getSubmission();
       }
 
-      await listApprovals();
-      await refreshAnalytics();
+      await listApprovals(false);
+      await refreshAnalytics(false);
     }
   } catch (err) {
     output("Approval action failed: " + err.message, "Request failed");
@@ -2047,7 +2058,7 @@ function renderAnalytics(summary) {
     formatPercent(summary.human_review_rate);
 }
 
-async function refreshAnalytics() {
+async function refreshAnalytics(showOutput = true) {
   try {
     const response = await fetch("/analytics/summary", {
       method: "GET",
@@ -2057,19 +2068,31 @@ async function refreshAnalytics() {
     const result = await parseResponse(response);
 
     if (!response.ok) {
-      output(result, "Analytics failed");
+      if (showOutput) {
+        output(result, "Analytics failed");
+      } else {
+        console.warn("Automatic analytics refresh failed:", result);
+      }
+
       return;
     }
 
     renderAnalytics(result.payload || {});
-    output(result, "Analytics refreshed");
+
+    if (showOutput) {
+      output(result, "Analytics refreshed");
+    }
   } catch (err) {
-    output("Analytics refresh failed: " + err.message, "Request failed");
+    if (showOutput) {
+      output("Analytics refresh failed: " + err.message, "Request failed");
+    } else {
+      console.warn("Automatic analytics refresh failed:", err);
+    }
   }
 }
 
 loadFixture("INV-1001");
-refreshAnalytics();
+refreshAnalytics(false);
 </script>
 </body>
 </html>`
