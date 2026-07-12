@@ -929,7 +929,7 @@ const indexHTML = `<!doctype html>
               </div>
               <div>
                 <label for="approvalReason">Reason</label>
-                <input id="approvalReason" value="Approved from demo UI.">
+                <input id="approvalReason" placeholder="Explain the approval action...">
               </div>
             </div>
 
@@ -1712,6 +1712,10 @@ function setApprovalActionsEnabled(enabled) {
   document.getElementById("requestInfoButton").disabled = !enabled;
 }
 
+function clearApprovalReason() {
+  document.getElementById("approvalReason").value = "";
+}
+
 function approvalStatusLabel(status) {
   if (status === "PENDING") {
     return "Pending review";
@@ -1733,6 +1737,8 @@ function approvalStatusLabel(status) {
 }
 
 function selectApproval(trackingId) {
+  const previousTrackingId = selectedApprovalTrackingId;
+
   const item = currentApprovalItems.find(
     candidate => candidate.tracking_id === trackingId
   );
@@ -1740,6 +1746,7 @@ function selectApproval(trackingId) {
   if (!item) {
     selectedApprovalTrackingId = "";
     document.getElementById("approvalTrackingId").value = "";
+    clearApprovalReason();
     setApprovalActionsEnabled(false);
     document.getElementById("approvalSelectionHint").textContent =
       "Select an approval item to inspect it.";
@@ -1748,6 +1755,10 @@ function selectApproval(trackingId) {
 
   selectedApprovalTrackingId = trackingId;
   document.getElementById("approvalTrackingId").value = trackingId;
+
+  if (previousTrackingId !== trackingId) {
+    clearApprovalReason();
+  }
 
   if (item.correlation_id) {
     document.getElementById("auditCorrelationId").value =
@@ -1826,6 +1837,7 @@ function renderApprovals(items) {
 
     selectedApprovalTrackingId = "";
     trackingInput.value = "";
+    clearApprovalReason();
     setApprovalActionsEnabled(false);
     selectionHint.textContent =
       "No selectable approval item is currently displayed.";
@@ -1917,6 +1929,7 @@ function renderApprovals(items) {
   } else {
     selectedApprovalTrackingId = "";
     trackingInput.value = "";
+    clearApprovalReason();
     setApprovalActionsEnabled(false);
 
     document.querySelectorAll(".approval-item").forEach(element => {
@@ -1971,9 +1984,15 @@ async function approvalAction(action) {
       return;
     }
 
+    const reason = document.getElementById("approvalReason").value.trim();
+    if (!reason) {
+      output("Enter a reason for the approval action.", "Missing input");
+      return;
+    }
+
     const payload = {
       actor: "demo-ui@approvalflow.local",
-      reason: document.getElementById("approvalReason").value || "Updated from demo UI."
+      reason: reason
     };
 
     const response = await fetch("/approvals/" + encodeURIComponent(trackingId) + "/" + action, {
@@ -1987,6 +2006,7 @@ async function approvalAction(action) {
 
     if (result.status >= 200 && result.status < 300) {
       document.getElementById("trackingId").value = trackingId;
+      clearApprovalReason();
 
       if (action === "approve") {
         startSubmissionPolling(trackingId);
