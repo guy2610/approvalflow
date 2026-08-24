@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,8 @@ import (
 
 const serviceName = "submission-service"
 const stateStore = "statestore"
+const claimReconciliationAttempts = 3
+const claimReconciliationBackoff = 10 * time.Millisecond
 
 type server struct {
 	log  *logger.Logger
@@ -78,62 +81,6 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 
 	duplicateKey := "duplicate:" + duplicateFingerprint(req)
 
-	var existingTrackingID string
-	found, err := s.dapr.GetState(r.Context(), stateStore, duplicateKey, &existingTrackingID)
-	if err != nil {
-		s.log.Error("failed to check duplicate state", logger.Fields{
-			"error":          err.Error(),
-			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to check duplicate state")
-		return
-	}
-
-	if found && existingTrackingID != "" {
-		recordKey := "submission:" + existingTrackingID
-
-		var existing domain.SubmissionRecord
-		foundRecord, err := s.dapr.GetState(r.Context(), stateStore, recordKey, &existing)
-		if err != nil || !foundRecord {
-			httpx.WriteError(w, r, http.StatusInternalServerError, "duplicate record is inconsistent")
-			return
-		}
-
-		response := domain.SubmissionResponse{
-			TrackingID:  existing.TrackingID,
-			Status:      domain.SubmissionDuplicate,
-			Reason:      "Duplicate submission detected by vendor + invoiceNumber + total. Existing tracking id returned; no second processing will be started.",
-			Duplicate:   true,
-			DuplicateOf: existing.TrackingID,
-		}
-
-		if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
-			EventID:       "audit_" + existing.TrackingID + "_duplicate_submission_detected",
-			CorrelationID: httpx.CorrelationIDFromContext(r.Context()),
-			TrackingID:    existing.TrackingID,
-			InvoiceID:     existing.OriginalInvoiceID,
-			Service:       serviceName,
-			Action:        "duplicate_submission_detected",
-			Outcome:       "duplicate",
-			Reason:        response.Reason,
-			Fields: map[string]any{
-				"duplicate_of":  existing.TrackingID,
-				"vendor":        req.Vendor,
-				"invoiceNumber": req.InvoiceNumber,
-				"total":         req.Total,
-			},
-		}); err != nil {
-			s.log.Error("failed to publish audit event", logger.Fields{
-				"error":          err.Error(),
-				"tracking_id":    existing.TrackingID,
-				"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
-			})
-		}
-
-		httpx.WriteJSON(w, http.StatusOK, response)
-		return
-	}
-
 	now := time.Now().UTC()
 	trackingID := "sub_" + randomHex(12)
 
@@ -152,22 +99,35 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 		UpdatedAtUTC:      now,
 	}
 
-	if err := s.dapr.SaveState(r.Context(), stateStore, "submission:"+trackingID, record); err != nil {
-		s.log.Error("failed to save submission", logger.Fields{
-			"error":          err.Error(),
-			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save submission")
-		return
-	}
+	transactionErr := s.dapr.SaveStateTransaction(
+		r.Context(),
+		stateStore,
+		[]daprclient.StateTransactionItem{
+			{Key: duplicateKey, Value: trackingID, CreateOnly: true},
+			{Key: "submission:" + trackingID, Value: record},
+		},
+	)
+	if transactionErr != nil {
+		reconciliation, reconciliationErr := s.reconcileSubmissionClaim(
+			r.Context(),
+			duplicateKey,
+			trackingID,
+		)
+		if reconciliationErr != nil {
+			s.log.Error("failed to reconcile submission claim", logger.Fields{
+				"transaction_error":     transactionErr.Error(),
+				"reconciliation_error":  reconciliationErr.Error(),
+				"correlation_id":        correlationID,
+				"candidate_tracking_id": trackingID,
+			})
+			httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save submission")
+			return
+		}
 
-	if err := s.dapr.SaveState(r.Context(), stateStore, duplicateKey, trackingID); err != nil {
-		s.log.Error("failed to save duplicate key", logger.Fields{
-			"error":          err.Error(),
-			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to save duplicate key")
-		return
+		if !reconciliation.winner {
+			s.respondToDuplicate(w, r, req, reconciliation.trackingID)
+			return
+		}
 	}
 
 	event := domain.SubmissionReceivedEvent{
@@ -227,6 +187,145 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusAccepted, response)
+}
+
+type claimReconciliation struct {
+	trackingID string
+	winner     bool
+}
+
+func (s *server) reconcileSubmissionClaim(
+	ctx context.Context,
+	duplicateKey string,
+	candidateTrackingID string,
+) (claimReconciliation, error) {
+	var lastReadErr error
+	for attempt := 1; attempt <= claimReconciliationAttempts; attempt++ {
+		var authoritativeTrackingID string
+		found, err := s.dapr.GetStateStrong(
+			ctx,
+			stateStore,
+			duplicateKey,
+			&authoritativeTrackingID,
+		)
+		if err != nil {
+			lastReadErr = fmt.Errorf("strong-read duplicate claim: %w", err)
+		} else if found && authoritativeTrackingID != "" {
+			if authoritativeTrackingID != candidateTrackingID {
+				return claimReconciliation{trackingID: authoritativeTrackingID}, nil
+			}
+
+			var persisted domain.SubmissionRecord
+			foundRecord, recordErr := s.dapr.GetStateStrong(
+				ctx,
+				stateStore,
+				"submission:"+candidateTrackingID,
+				&persisted,
+			)
+			if recordErr != nil {
+				lastReadErr = fmt.Errorf("strong-read authoritative submission: %w", recordErr)
+			} else if !foundRecord {
+				return claimReconciliation{}, fmt.Errorf(
+					"inconsistent own claim %s: submission state is missing",
+					candidateTrackingID,
+				)
+			} else {
+				return claimReconciliation{
+					trackingID: candidateTrackingID,
+					winner:     true,
+				}, nil
+			}
+		} else {
+			// Preserve an earlier transient read error for diagnostics if the
+			// bounded loop later exhausts without observing a claim.
+		}
+
+		if attempt < claimReconciliationAttempts {
+			timer := time.NewTimer(claimReconciliationBackoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return claimReconciliation{}, fmt.Errorf("reconciliation canceled: %w", ctx.Err())
+			case <-timer.C:
+			}
+		}
+	}
+
+	if lastReadErr != nil {
+		return claimReconciliation{}, fmt.Errorf(
+			"reconciliation exhausted after %d attempts: %w",
+			claimReconciliationAttempts,
+			lastReadErr,
+		)
+	}
+	return claimReconciliation{}, fmt.Errorf(
+		"reconciliation exhausted after %d attempts: no authoritative claim visible",
+		claimReconciliationAttempts,
+	)
+}
+
+func (s *server) respondToDuplicate(
+	w http.ResponseWriter,
+	r *http.Request,
+	req domain.SubmissionRequest,
+	trackingID string,
+) {
+	var existing domain.SubmissionRecord
+	found, err := s.dapr.GetStateStrong(
+		r.Context(),
+		stateStore,
+		"submission:"+trackingID,
+		&existing,
+	)
+	if err != nil || !found {
+		fields := logger.Fields{
+			"tracking_id":    trackingID,
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		}
+		if err != nil {
+			fields["reconciliation_error"] = err.Error()
+		} else {
+			fields["reconciliation_error"] = "authoritative submission state is missing"
+		}
+		s.log.Error("failed to load authoritative duplicate submission", fields)
+		httpx.WriteError(w, r, http.StatusInternalServerError, "duplicate record is inconsistent")
+		return
+	}
+
+	response := domain.SubmissionResponse{
+		TrackingID:  existing.TrackingID,
+		Status:      domain.SubmissionDuplicate,
+		Reason:      "Duplicate submission detected by vendor + invoiceNumber + total. Existing tracking id returned; no second processing will be started.",
+		Duplicate:   true,
+		DuplicateOf: existing.TrackingID,
+	}
+
+	if err := auditlog.Publish(r.Context(), s.dapr, auditlog.Event{
+		EventID:       "audit_" + existing.TrackingID + "_duplicate_submission_detected",
+		CorrelationID: httpx.CorrelationIDFromContext(r.Context()),
+		TrackingID:    existing.TrackingID,
+		InvoiceID:     existing.OriginalInvoiceID,
+		Service:       serviceName,
+		Action:        "duplicate_submission_detected",
+		Outcome:       "duplicate",
+		Reason:        response.Reason,
+		Fields: map[string]any{
+			"duplicate_of":  existing.TrackingID,
+			"vendor":        req.Vendor,
+			"invoiceNumber": req.InvoiceNumber,
+			"total":         req.Total,
+		},
+	}); err != nil {
+		s.log.Error("failed to publish audit event", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    existing.TrackingID,
+			"correlation_id": httpx.CorrelationIDFromContext(r.Context()),
+		})
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 func (s *server) handleSubmissionByID(w http.ResponseWriter, r *http.Request) {

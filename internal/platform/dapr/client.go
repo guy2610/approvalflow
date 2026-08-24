@@ -113,6 +113,21 @@ type stateItem struct {
 	Options *stateOptions `json:"options,omitempty"`
 }
 
+type StateTransactionItem struct {
+	Key        string
+	Value      any
+	CreateOnly bool
+}
+
+type stateTransactionOperation struct {
+	Operation string    `json:"operation"`
+	Request   stateItem `json:"request"`
+}
+
+type stateTransactionRequest struct {
+	Operations []stateTransactionOperation `json:"operations"`
+}
+
 var ErrStateConflict = errors.New("state write conflict")
 
 func (c *Client) PublishEvent(ctx context.Context, pubsubName string, topic string, payload any) error {
@@ -180,6 +195,74 @@ func (c *Client) SaveState(ctx context.Context, store string, key string, value 
 	if res.StatusCode >= 400 {
 		raw, _ := io.ReadAll(res.Body)
 		return fmt.Errorf("save state failed with status %d: %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	return nil
+}
+
+func (c *Client) SaveStateTransaction(
+	ctx context.Context,
+	store string,
+	items []StateTransactionItem,
+) error {
+	if len(items) == 0 {
+		return fmt.Errorf("save state transaction: no items")
+	}
+
+	operations := make([]stateTransactionOperation, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Key) == "" {
+			return fmt.Errorf("save state transaction: empty key")
+		}
+
+		options := &stateOptions{Consistency: "strong"}
+		if item.CreateOnly {
+			options.Concurrency = "first-write"
+		}
+		operations = append(operations, stateTransactionOperation{
+			Operation: "upsert",
+			Request: stateItem{
+				Key:     item.Key,
+				Value:   item.Value,
+				Options: options,
+			},
+		})
+	}
+
+	body, err := json.Marshal(stateTransactionRequest{Operations: operations})
+	if err != nil {
+		return fmt.Errorf("marshal state transaction: %w", err)
+	}
+
+	transactionURL := fmt.Sprintf(
+		"%s/v1.0/state/%s/transaction",
+		c.baseURL,
+		url.PathEscape(store),
+	)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		transactionURL,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return fmt.Errorf("create state transaction request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("save state transaction: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 400 {
+		raw, _ := io.ReadAll(res.Body)
+		return fmt.Errorf(
+			"save state transaction failed with status %d: %s",
+			res.StatusCode,
+			strings.TrimSpace(string(raw)),
+		)
 	}
 
 	return nil
@@ -303,12 +386,34 @@ func (c *Client) GetState(
 	key string,
 	out any,
 ) (bool, error) {
+	return c.getState(ctx, store, key, "", out)
+}
+
+func (c *Client) GetStateStrong(
+	ctx context.Context,
+	store string,
+	key string,
+	out any,
+) (bool, error) {
+	return c.getState(ctx, store, key, "strong", out)
+}
+
+func (c *Client) getState(
+	ctx context.Context,
+	store string,
+	key string,
+	consistency string,
+	out any,
+) (bool, error) {
 	stateURL := fmt.Sprintf(
 		"%s/v1.0/state/%s/%s",
 		c.baseURL,
 		url.PathEscape(store),
 		url.PathEscape(key),
 	)
+	if consistency != "" {
+		stateURL += "?consistency=" + url.QueryEscape(consistency)
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,

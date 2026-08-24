@@ -135,6 +135,114 @@ func TestGetStateDecodesValue(t *testing.T) {
 	}
 }
 
+func TestGetStateStrongRequestsStrongConsistency(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/v1.0/state/statestore/duplicate:fingerprint" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("consistency"); got != "strong" {
+			t.Fatalf("expected strong consistency, got %q", got)
+		}
+		_ = json.NewEncoder(w).Encode("sub_123")
+	})
+	defer server.Close()
+
+	var trackingID string
+	found, err := client.GetStateStrong(
+		context.Background(),
+		"statestore",
+		"duplicate:fingerprint",
+		&trackingID,
+	)
+	if err != nil {
+		t.Fatalf("GetStateStrong returned error: %v", err)
+	}
+	if !found || trackingID != "sub_123" {
+		t.Fatalf("expected sub_123, got found=%v value=%q", found, trackingID)
+	}
+}
+
+func TestSaveStateTransactionUsesCreateOnlyAndAtomicUpserts(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/v1.0/state/statestore/transaction" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		var request stateTransactionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode transaction request: %v", err)
+		}
+		if len(request.Operations) != 2 {
+			t.Fatalf("expected two operations, got %d", len(request.Operations))
+		}
+
+		claim := request.Operations[0]
+		if claim.Operation != "upsert" || claim.Request.Key != "duplicate:fingerprint" {
+			t.Fatalf("unexpected claim operation: %+v", claim)
+		}
+		if claim.Request.Options == nil || claim.Request.Options.Concurrency != "first-write" || claim.Request.Options.Consistency != "strong" {
+			t.Fatalf("unexpected claim options: %+v", claim.Request.Options)
+		}
+		var claimValue string
+		claimRaw, _ := json.Marshal(claim.Request.Value)
+		if err := json.Unmarshal(claimRaw, &claimValue); err != nil || claimValue != "sub_123" {
+			t.Fatalf("unexpected claim value: %v", claim.Request.Value)
+		}
+
+		record := request.Operations[1]
+		if record.Operation != "upsert" || record.Request.Key != "submission:sub_123" {
+			t.Fatalf("unexpected record operation: %+v", record)
+		}
+		if record.Request.Options == nil || record.Request.Options.Concurrency != "" || record.Request.Options.Consistency != "strong" {
+			t.Fatalf("unexpected record options: %+v", record.Request.Options)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	defer server.Close()
+
+	err := client.SaveStateTransaction(context.Background(), "statestore", []StateTransactionItem{
+		{Key: "duplicate:fingerprint", Value: "sub_123", CreateOnly: true},
+		{Key: "submission:sub_123", Value: map[string]string{"status": "ACCEPTED"}},
+	})
+	if err != nil {
+		t.Fatalf("SaveStateTransaction returned error: %v", err)
+	}
+}
+
+func TestSaveStateTransactionReturnsSidecarError(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "transaction conflict", http.StatusInternalServerError)
+	})
+	defer server.Close()
+
+	err := client.SaveStateTransaction(context.Background(), "statestore", []StateTransactionItem{
+		{Key: "duplicate:fingerprint", Value: "sub_123", CreateOnly: true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "transaction conflict") {
+		t.Fatalf("expected sidecar transaction error, got %v", err)
+	}
+}
+
+func TestSaveStateTransactionRejectsInvalidItemsWithoutRequest(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("HTTP request must not be sent for invalid transaction")
+	})
+	defer server.Close()
+
+	if err := client.SaveStateTransaction(context.Background(), "statestore", nil); err == nil {
+		t.Fatalf("expected empty transaction error")
+	}
+	if err := client.SaveStateTransaction(context.Background(), "statestore", []StateTransactionItem{{Value: "value"}}); err == nil {
+		t.Fatalf("expected empty key error")
+	}
+}
+
 func TestGetSecretDecodesSecretValue(t *testing.T) {
 	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"payment-provider-token": "secret-value"})
