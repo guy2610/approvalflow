@@ -4,6 +4,8 @@ ApprovalFlow is an event-driven invoice and expense approval platform built arou
 
 ## Browser demo
 
+**Live demo:** https://guy2610.github.io/approvalflow/demo/
+
 A browser-only simulation is included under `docs/`. It demonstrates
 automatic approval, human review, request-info, revision-aware resubmission,
 payment, analytics, and audit behavior without running backend services.
