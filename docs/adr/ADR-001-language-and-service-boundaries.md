@@ -2,7 +2,7 @@
 
 ## Context
 
-ApprovalFlow needs several microservices, asynchronous workflows, Dapr integration, an agent-assisted decision step, and a short delivery timeline.
+ApprovalFlow combines asynchronous workflow processing, Dapr-based infrastructure integration, deterministic decision logic, and an agent-assisted evaluation boundary across several services.
 
 I wanted the core services to be simple to build, test, containerize, and reason about.
 

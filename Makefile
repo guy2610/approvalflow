@@ -17,7 +17,9 @@ help:
 
 setup:
 	@cp -n .env.example .env || true
-	@echo "Local .env ready"
+	@mkdir -p infra/dapr/secrets
+	@cp -n infra/dapr/secrets.example.json infra/dapr/secrets/secrets.json || true
+	@echo "Local .env and Dapr secrets ready"
 
 compose-up:
 	docker compose up --build

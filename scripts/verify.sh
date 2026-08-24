@@ -725,7 +725,7 @@ assert_anti_cheese_approval() {
             and .agent_recommended == "approve"
           )
       ' >/dev/null; then
-      pass "prompt-injection agent recommended approve but router kept human review"
+      pass "prompt-injection case: agent recommended approve but router kept human review"
       return
     fi
 
@@ -903,7 +903,7 @@ wait_for_audit_actions "$CORR_1021" \
   "approval_required_published" \
   "approval_item_queued"
 
-log "Prompt-injection: INV-1013 prompt injection cannot auto-approve"
+log "Prompt-injection guardrail: INV-1013 cannot auto-approve"
 CORR_1013="$RUN_ID-1013"
 RESP_1013="$(submit_invoice "INV-1013" "$CORR_1013" "202")"
 TRACK_1013="$(printf "%s" "$RESP_1013" | jq -r '.tracking_id')"

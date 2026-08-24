@@ -22,8 +22,6 @@ coverage.out
 *.test
 
 # Python
-__pycache__/
-*.py[cod]
 .pytest_cache/
 .venv/
 venv/
@@ -55,3 +53,7 @@ reports/*.local.*
 # Personal notes / local documents
 *.docx
 ~$*
+
+# Python generated files
+__pycache__/
+*.py[cod]

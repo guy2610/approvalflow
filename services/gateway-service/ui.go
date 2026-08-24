@@ -799,7 +799,7 @@ const indexHTML = `<!doctype html>
               <button class="ghost" onclick="loadFixture('INV-1003')">INV-1003 review</button>
               <button class="ghost" onclick="loadFixture('INV-1007')">INV-1007 duplicate</button>
               <button class="ghost" onclick="loadFixture('INV-1012')">INV-1012 failure</button>
-              <button class="ghost" onclick="loadFixture('INV-1013')">INV-1013 prompt-injection</button>
+              <button class="ghost" onclick="loadFixture('INV-1013')">INV-1013 prompt injection</button>
             </div>
 
             <label for="correlationId">Correlation ID</label>
