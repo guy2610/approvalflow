@@ -131,12 +131,13 @@ func (s *server) handleSubmissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event := domain.SubmissionReceivedEvent{
-		EventID:       "evt_" + randomHex(12),
-		EventType:     domain.TopicSubmissionReceived,
-		CorrelationID: httpx.CorrelationIDFromContext(r.Context()),
-		TrackingID:    trackingID,
-		InvoiceID:     req.ID,
-		OccurredAtUTC: now,
+		RevisionNumber: record.RevisionNumber,
+		EventID:        "evt_" + randomHex(12),
+		EventType:      domain.TopicSubmissionReceived,
+		CorrelationID:  httpx.CorrelationIDFromContext(r.Context()),
+		TrackingID:     trackingID,
+		InvoiceID:      req.ID,
+		OccurredAtUTC:  now,
 	}
 
 	if err := s.dapr.PublishEvent(r.Context(), domain.PubSubName, domain.TopicSubmissionReceived, event); err != nil {
@@ -675,12 +676,13 @@ func (s *server) applyAdditionalInfo(w http.ResponseWriter, r *http.Request, tra
 
 	now := time.Now().UTC()
 	event := domain.SubmissionReceivedEvent{
-		EventID:       "evt_additional_info_" + trackingID + "_" + strconv.Itoa(record.RevisionNumber),
-		EventType:     domain.TopicSubmissionReceived,
-		CorrelationID: record.CorrelationID,
-		TrackingID:    trackingID,
-		InvoiceID:     record.OriginalInvoiceID,
-		OccurredAtUTC: now,
+		RevisionNumber: record.RevisionNumber,
+		EventID:        "evt_additional_info_" + trackingID + "_" + strconv.Itoa(record.RevisionNumber),
+		EventType:      domain.TopicSubmissionReceived,
+		CorrelationID:  record.CorrelationID,
+		TrackingID:     trackingID,
+		InvoiceID:      record.OriginalInvoiceID,
+		OccurredAtUTC:  now,
 	}
 
 	if err := s.dapr.PublishEvent(

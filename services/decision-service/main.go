@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,11 +30,29 @@ type server struct {
 }
 
 type autonomyDailyExposure struct {
-	Date            string             `json:"date"`
-	SubmitterTotals map[string]float64 `json:"submitter_totals"`
-	VendorTotals    map[string]float64 `json:"vendor_totals"`
-	UpdatedAtUTC    time.Time          `json:"updated_at_utc"`
+	Reservations    map[string]autonomyReservation `json:"reservations"`
+	Date            string                         `json:"date"`
+	SubmitterTotals map[string]float64             `json:"submitter_totals"`
+	VendorTotals    map[string]float64             `json:"vendor_totals"`
+	UpdatedAtUTC    time.Time                      `json:"updated_at_utc"`
 }
+
+// Reservations and totals are committed together in the daily aggregate.
+type autonomyReservation struct {
+	ReservationID  string                   `json:"reservation_id"`
+	TrackingID     string                   `json:"tracking_id"`
+	RevisionNumber int                      `json:"revision_number"`
+	SourceEventID  string                   `json:"source_event_id"`
+	SubmitterKey   string                   `json:"submitter_key"`
+	VendorKey      string                   `json:"vendor_key"`
+	AmountUSD      float64                  `json:"amount_usd"`
+	Admitted       bool                     `json:"admitted"`
+	Reason         string                   `json:"reason"`
+	Violations     []domain.PolicyViolation `json:"violations"`
+	CreatedAtUTC   time.Time                `json:"created_at_utc"`
+}
+
+const autonomyReservationAttempts = 5
 
 type daprSubscription struct {
 	PubSubName string `json:"pubsubname"`
@@ -131,24 +150,10 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	policyCfg, err := policy.LoadConfigFromEnv()
-	if err != nil {
-		s.log.Error("failed to reload policy config", logger.Fields{
-			"error":          err.Error(),
-			"tracking_id":    event.TrackingID,
-			"correlation_id": event.CorrelationID,
-		})
-		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reload policy config")
+	if strings.TrimSpace(event.TrackingID) == "" || event.RevisionNumber <= 0 {
+		httpx.WriteError(w, r, http.StatusBadRequest, "tracking ID and positive event revision are required")
 		return
 	}
-
-	s.log.Info("policy config reloaded for decision", logger.Fields{
-		"tracking_id":          event.TrackingID,
-		"correlation_id":       event.CorrelationID,
-		"autonomy_ceiling_usd": policyCfg.AutonomyCeilingUSD,
-		"min_confidence":       policyCfg.MinConfidence,
-		"cumulative_enabled":   policyCfg.CumulativeAutonomyEnabled,
-	})
 
 	var record domain.SubmissionRecord
 	status, err := s.dapr.InvokeJSON(
@@ -169,6 +174,38 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if event.RevisionNumber < record.RevisionNumber {
+		s.log.Info("stale submission event acknowledged", logger.Fields{
+			"tracking_id": event.TrackingID, "event_revision": event.RevisionNumber,
+			"current_revision": record.RevisionNumber, "source_event_id": event.EventID,
+		})
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if event.RevisionNumber > record.RevisionNumber {
+		httpx.WriteError(w, r, http.StatusInternalServerError, "event revision is ahead of submission state")
+		return
+	}
+
+	policyCfg, err := policy.LoadConfigFromEnv()
+	if err != nil {
+		s.log.Error("failed to reload policy config", logger.Fields{
+			"error":          err.Error(),
+			"tracking_id":    event.TrackingID,
+			"correlation_id": event.CorrelationID,
+		})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reload policy config")
+		return
+	}
+
+	s.log.Info("policy config reloaded for decision", logger.Fields{
+		"tracking_id":          event.TrackingID,
+		"correlation_id":       event.CorrelationID,
+		"autonomy_ceiling_usd": policyCfg.AutonomyCeilingUSD,
+		"min_confidence":       policyCfg.MinConfidence,
+		"cumulative_enabled":   policyCfg.CumulativeAutonomyEnabled,
+	})
+
 	agentRecommendation, agentErr := s.askAgent(r, event, record)
 	if agentErr != nil {
 		s.log.Error("agent recommendation unavailable; continuing with deterministic router", logger.Fields{
@@ -187,7 +224,12 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	}
 
 	var budgetAdjusted bool
-	decision, budgetAdjusted = s.applyCumulativeAutonomyBudget(r.Context(), record.Request, decision, event, policyCfg)
+	decision, budgetAdjusted, err = s.applyCumulativeAutonomyBudget(r.Context(), record.Request, decision, event, policyCfg)
+	if err != nil {
+		s.log.Error("failed to reserve cumulative autonomy exposure", logger.Fields{"error": err.Error(), "tracking_id": event.TrackingID})
+		httpx.WriteError(w, r, http.StatusInternalServerError, "failed to reserve cumulative autonomy exposure")
+		return
+	}
 	if budgetAdjusted {
 		s.log.Info("auto-approval converted to human review by cumulative autonomy budget", logger.Fields{
 			"tracking_id":    event.TrackingID,
@@ -384,83 +426,116 @@ func (s *server) handleSubmissionReceived(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.SubmissionRequest, decision domain.DecisionResult, event domain.SubmissionReceivedEvent, cfg policy.Config) (domain.DecisionResult, bool) {
-	if !cfg.CumulativeAutonomyEnabled || decision.Route != domain.RouteAutoApprove {
-		return decision, false
+func (s *server) applyCumulativeAutonomyBudget(ctx context.Context, req domain.SubmissionRequest, decision domain.DecisionResult, event domain.SubmissionReceivedEvent, cfg policy.Config) (domain.DecisionResult, bool, error) {
+	if strings.TrimSpace(event.TrackingID) == "" || event.RevisionNumber <= 0 {
+		return decision, false, fmt.Errorf("invalid autonomy reservation identity")
 	}
-
 	dateKey := autonomyDateKey(req.Date, decision.DecidedAtUTC)
 	stateKey := "autonomy:daily:" + dateKey
-
-	exposure := autonomyDailyExposure{
-		Date:            dateKey,
-		SubmitterTotals: map[string]float64{},
-		VendorTotals:    map[string]float64{},
-	}
-
-	found, err := s.dapr.GetState(ctx, stateStore, stateKey, &exposure)
+	reservationID := fmt.Sprintf("%s:revision:%d", event.TrackingID, event.RevisionNumber)
+	var exposure autonomyDailyExposure
+	found, etag, err := s.dapr.GetStateStrongWithETag(ctx, stateStore, stateKey, &exposure)
 	if err != nil {
-		s.log.Error("failed to load cumulative autonomy exposure; failing closed to human review", logger.Fields{
-			"error":          err.Error(),
-			"state_key":      stateKey,
-			"tracking_id":    event.TrackingID,
-			"correlation_id": event.CorrelationID,
+		return decision, false, err
+	}
+	for attempt := 0; attempt <= autonomyReservationAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return decision, false, err
+		}
+		if exposure.SubmitterTotals == nil {
+			exposure.SubmitterTotals = map[string]float64{}
+		}
+		if exposure.VendorTotals == nil {
+			exposure.VendorTotals = map[string]float64{}
+		}
+		if exposure.Reservations == nil {
+			exposure.Reservations = map[string]autonomyReservation{}
+		}
+		if saved, ok := exposure.Reservations[reservationID]; ok {
+			decision.Route = domain.RouteHumanReview
+			if saved.Admitted {
+				decision.Route = domain.RouteAutoApprove
+			}
+			decision.AmountUSD = saved.AmountUSD
+			decision.Reason = saved.Reason
+			decision.Violations = saved.Violations
+			return decision, !saved.Admitted, nil
+		}
+		// The final reread may reveal our committed reservation, but cannot start another write.
+		if attempt == autonomyReservationAttempts {
+			break
+		}
+		// Stored outcomes remain authoritative even after a config or router change.
+		if !cfg.CumulativeAutonomyEnabled || decision.Route != domain.RouteAutoApprove {
+			return decision, false, nil
+		}
+		if !found {
+			exposure.Date = dateKey
+		}
+		submitterKey, vendorKey := normalizeExposureKey(req.Submitter), normalizeExposureKey(req.Vendor)
+		adjusted := policy.ApplyCumulativeAutonomyBudget(decision, cfg, policy.AutonomyBudgetContext{
+			SubmitterApprovedTodayUSD: exposure.SubmitterTotals[submitterKey],
+			VendorApprovedTodayUSD:    exposure.VendorTotals[vendorKey],
 		})
-
-		decision.Route = domain.RouteHumanReview
-		decision.Violations = append(decision.Violations, domain.PolicyViolation{
-			RuleID:  "AUTONOMY-BUDGET-UNAVAILABLE",
-			Message: "Cumulative autonomy exposure state was unavailable, so the item requires human review.",
-		})
-		decision.Reason = "Human review required because cumulative autonomy exposure could not be verified."
-		return decision, true
+		admitted := adjusted.Route == domain.RouteAutoApprove
+		now := time.Now().UTC()
+		exposure.Reservations[reservationID] = autonomyReservation{
+			ReservationID: reservationID, TrackingID: event.TrackingID, RevisionNumber: event.RevisionNumber,
+			SourceEventID: event.EventID, SubmitterKey: submitterKey, VendorKey: vendorKey,
+			AmountUSD: adjusted.AmountUSD, Admitted: admitted, Reason: adjusted.Reason,
+			Violations: adjusted.Violations, CreatedAtUTC: now,
+		}
+		if admitted {
+			exposure.SubmitterTotals[submitterKey] += adjusted.AmountUSD
+			exposure.VendorTotals[vendorKey] += adjusted.AmountUSD
+		}
+		exposure.UpdatedAtUTC = now
+		if found {
+			err = s.dapr.SaveStateWithETag(ctx, stateStore, stateKey, exposure, etag)
+			if err == nil {
+				return adjusted, !admitted, nil
+			}
+			if !errors.Is(err, daprclient.ErrStateConflict) {
+				return decision, false, err
+			}
+			// Discard all local increments before reading after a CAS conflict.
+			exposure = autonomyDailyExposure{}
+			found, etag, err = s.dapr.GetStateStrongWithETag(ctx, stateStore, stateKey, &exposure)
+		} else {
+			err = s.dapr.SaveStateTransaction(ctx, stateStore, []daprclient.StateTransactionItem{{Key: stateKey, Value: exposure, CreateOnly: true}})
+			if err == nil {
+				return adjusted, !admitted, nil
+			}
+			// Dapr 1.14.4 transaction errors are ambiguous, including HTTP 500.
+			// Reconcile from authoritative state without classifying infrastructure errors as conflicts.
+			exposure, etag, err = s.reconcileAutonomyCreation(ctx, stateKey, err)
+			found = err == nil
+		}
+		if err != nil {
+			return decision, false, err
+		}
 	}
+	return decision, false, fmt.Errorf("cumulative autonomy reservation retries exhausted")
+}
 
-	if !found {
-		exposure.Date = dateKey
+const autonomyCreationReadAttempts = 3
+
+func (s *server) reconcileAutonomyCreation(ctx context.Context, key string, createErr error) (autonomyDailyExposure, string, error) {
+	var readErr error
+	for attempt := 0; attempt < autonomyCreationReadAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return autonomyDailyExposure{}, "", errors.Join(createErr, err)
+		}
+		var exposure autonomyDailyExposure
+		found, etag, err := s.dapr.GetStateStrongWithETag(ctx, stateStore, key, &exposure)
+		if err == nil && found {
+			return exposure, etag, nil
+		}
+		if err != nil {
+			readErr = err
+		}
 	}
-	if exposure.SubmitterTotals == nil {
-		exposure.SubmitterTotals = map[string]float64{}
-	}
-	if exposure.VendorTotals == nil {
-		exposure.VendorTotals = map[string]float64{}
-	}
-
-	submitterKey := normalizeExposureKey(req.Submitter)
-	vendorKey := normalizeExposureKey(req.Vendor)
-
-	budgetContext := policy.AutonomyBudgetContext{
-		SubmitterApprovedTodayUSD: exposure.SubmitterTotals[submitterKey],
-		VendorApprovedTodayUSD:    exposure.VendorTotals[vendorKey],
-	}
-
-	adjusted := policy.ApplyCumulativeAutonomyBudget(decision, cfg, budgetContext)
-	if adjusted.Route != domain.RouteAutoApprove {
-		return adjusted, true
-	}
-
-	exposure.SubmitterTotals[submitterKey] += adjusted.AmountUSD
-	exposure.VendorTotals[vendorKey] += adjusted.AmountUSD
-	exposure.UpdatedAtUTC = time.Now().UTC()
-
-	if err := s.dapr.SaveState(ctx, stateStore, stateKey, exposure); err != nil {
-		s.log.Error("failed to save cumulative autonomy exposure after auto-approval", logger.Fields{
-			"error":          err.Error(),
-			"state_key":      stateKey,
-			"tracking_id":    event.TrackingID,
-			"correlation_id": event.CorrelationID,
-		})
-
-		adjusted.Route = domain.RouteHumanReview
-		adjusted.Violations = append(adjusted.Violations, domain.PolicyViolation{
-			RuleID:  "AUTONOMY-BUDGET-UNAVAILABLE",
-			Message: "Cumulative autonomy exposure could not be persisted, so the item requires human review.",
-		})
-		adjusted.Reason = "Human review required because cumulative autonomy exposure could not be persisted."
-		return adjusted, true
-	}
-
-	return adjusted, false
+	return autonomyDailyExposure{}, "", fmt.Errorf("autonomy creation could not be reconciled: %w", errors.Join(createErr, readErr))
 }
 
 func autonomyDateKey(invoiceDate string, fallback time.Time) string {

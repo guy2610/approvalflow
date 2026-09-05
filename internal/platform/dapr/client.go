@@ -480,12 +480,25 @@ func (c *Client) GetStateWithETag(
 	key string,
 	out any,
 ) (bool, string, error) {
+	return c.getStateWithETag(ctx, store, key, out, "")
+}
+
+// GetStateStrongWithETag loads a single strong snapshot and its concurrency token.
+func (c *Client) GetStateStrongWithETag(ctx context.Context, store, key string, out any) (bool, string, error) {
+	return c.getStateWithETag(ctx, store, key, out, "strong")
+}
+
+func (c *Client) getStateWithETag(ctx context.Context, store, key string, out any, consistency string) (bool, string, error) {
 	stateURL := fmt.Sprintf(
 		"%s/v1.0/state/%s/%s",
 		c.baseURL,
 		url.PathEscape(store),
 		url.PathEscape(key),
 	)
+
+	if consistency != "" {
+		stateURL += "?consistency=" + url.QueryEscape(consistency)
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,

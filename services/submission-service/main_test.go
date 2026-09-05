@@ -642,3 +642,54 @@ func TestApplyAdditionalInfoToRecordRejectsInvalidAttendees(t *testing.T) {
 		t.Fatalf("expected non-positive attendees to be rejected")
 	}
 }
+
+func TestSubmissionEventsCarryPublishedRevision(t *testing.T) {
+	fake := newFakeSubmissionState()
+	srv, closeSidecar := submissionServerForTest(t, fake)
+	defer closeSidecar()
+	w := performSubmissionRequest(t, srv)
+	if w.Code != http.StatusAccepted {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	fake.mu.Lock()
+	if len(fake.receivedEvents) != 1 {
+		fake.mu.Unlock()
+		t.Fatal("expected initial event")
+	}
+	initial := fake.receivedEvents[0]
+	var record domain.SubmissionRecord
+	err := json.Unmarshal(fake.values["submission:"+initial.TrackingID], &record)
+	if err != nil {
+		fake.mu.Unlock()
+		t.Fatal(err)
+	}
+	if initial.RevisionNumber != 1 || initial.RevisionNumber != record.RevisionNumber {
+		fake.mu.Unlock()
+		t.Fatalf("initial event revision: %+v", initial)
+	}
+	record.Status = domain.SubmissionInfoRequested
+	fake.values["submission:"+initial.TrackingID], err = json.Marshal(record)
+	fake.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/submissions/"+initial.TrackingID+"/additional-info", strings.NewReader(`{"notes":"Additional business justification"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.applyAdditionalInfo(w, req, initial.TrackingID)
+	if w.Code < 200 || w.Code >= 300 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.receivedEvents) != 2 {
+		t.Fatal("expected resubmission event")
+	}
+	updated := fake.receivedEvents[1]
+	if err := json.Unmarshal(fake.values["submission:"+initial.TrackingID], &record); err != nil {
+		t.Fatal(err)
+	}
+	if updated.RevisionNumber != 2 || updated.RevisionNumber != record.RevisionNumber || updated.TrackingID != initial.TrackingID || fake.receivedEvents[0].RevisionNumber != 1 {
+		t.Fatalf("wrong published revisions: %+v", fake.receivedEvents)
+	}
+}

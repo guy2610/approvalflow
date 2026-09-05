@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestPubSubTopics(t *testing.T) {
 	if PubSubName != "pubsub" {
@@ -50,5 +53,20 @@ func TestPaymentStatusConstants(t *testing.T) {
 
 	if PaymentFailed != "FAILED" {
 		t.Fatalf("unexpected payment failed status: %s", PaymentFailed)
+	}
+}
+
+func TestSubmissionReceivedEventRevisionJSON(t *testing.T) {
+	event := SubmissionReceivedEvent{TrackingID: "T", EventID: "source", RevisionNumber: 2}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded SubmissionReceivedEvent
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.RevisionNumber != 2 || decoded.TrackingID != "T" {
+		t.Fatal(decoded)
 	}
 }

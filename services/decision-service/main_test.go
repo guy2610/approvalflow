@@ -84,8 +84,9 @@ func TestAutonomyDateKeyFallsBackToDecisionDate(t *testing.T) {
 
 func TestDecisionAuditEventIDIsStableForRetry(t *testing.T) {
 	event := domain.SubmissionReceivedEvent{
-		EventID:    "evt_revision_2",
-		TrackingID: "sub-123",
+		RevisionNumber: 2,
+		EventID:        "evt_revision_2",
+		TrackingID:     "sub-123",
 	}
 
 	first := decisionAuditEventID(event, "decision_produced")
@@ -98,12 +99,14 @@ func TestDecisionAuditEventIDIsStableForRetry(t *testing.T) {
 
 func TestDecisionAuditEventIDDiffersAcrossRevisions(t *testing.T) {
 	firstEvent := domain.SubmissionReceivedEvent{
-		EventID:    "evt_initial",
-		TrackingID: "sub-123",
+		RevisionNumber: 1,
+		EventID:        "evt_initial",
+		TrackingID:     "sub-123",
 	}
 	secondEvent := domain.SubmissionReceivedEvent{
-		EventID:    "evt_additional_info_sub-123_2",
-		TrackingID: "sub-123",
+		RevisionNumber: 2,
+		EventID:        "evt_additional_info_sub-123_2",
+		TrackingID:     "sub-123",
 	}
 
 	first := decisionAuditEventID(firstEvent, "decision_produced")
@@ -116,8 +119,9 @@ func TestDecisionAuditEventIDDiffersAcrossRevisions(t *testing.T) {
 
 func TestDecisionAuditEventIDDiffersAcrossActions(t *testing.T) {
 	event := domain.SubmissionReceivedEvent{
-		EventID:    "evt_revision_2",
-		TrackingID: "sub-123",
+		RevisionNumber: 2,
+		EventID:        "evt_revision_2",
+		TrackingID:     "sub-123",
 	}
 
 	decisionID := decisionAuditEventID(event, "decision_produced")

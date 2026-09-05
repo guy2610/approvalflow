@@ -460,3 +460,30 @@ func TestSaveStateWithETagRejectsEmptyETag(t *testing.T) {
 		t.Fatalf("expected empty ETag error")
 	}
 }
+
+func TestGetStateStrongWithETag(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("consistency") != "strong" {
+			t.Error("missing strong consistency")
+		}
+		w.Header().Set("ETag", `"7"`)
+		_, _ = w.Write([]byte(`{"total":100}`))
+	})
+	defer server.Close()
+	var out map[string]int
+	found, etag, err := client.GetStateStrongWithETag(context.Background(), "statestore", "autonomy:daily:2026-05-30", &out)
+	if err != nil || !found || etag != "7" || out["total"] != 100 {
+		t.Fatalf("found=%v etag=%s state=%v err=%v", found, etag, out, err)
+	}
+}
+
+func TestTransaction500RemainsInfrastructureError(t *testing.T) {
+	client, server := newTestClient(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errorCode":"ERR_STATE_TRANSACTION","message":"transaction failed"}`, 500)
+	})
+	defer server.Close()
+	err := client.SaveStateTransaction(context.Background(), "statestore", []StateTransactionItem{{Key: "autonomy:daily:2026-05-30", Value: 1, CreateOnly: true}})
+	if err == nil || errors.Is(err, ErrStateConflict) {
+		t.Fatalf("transaction failure must remain ambiguous: %v", err)
+	}
+}
